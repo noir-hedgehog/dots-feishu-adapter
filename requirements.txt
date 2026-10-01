@@ -1,0 +1,3 @@
+# Official PyPI sources only; resolve/freeze before deployment.
+lark-oapi>=1.5,<2
+cryptography>=44,<50

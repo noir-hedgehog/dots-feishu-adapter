@@ -1,0 +1,12 @@
+{
+  "mode": "offline_mock_only",
+  "bind": "127.0.0.1",
+  "port": 8765,
+  "principal": "mock-owner",
+  "authorized_feishu_open_id": "mock-user",
+  "authorized_private_chat_id": "mock-dm",
+  "subscription_max_ttl_ms": 3600000,
+  "feishu_app_id": null,
+  "feishu_app_secret": null,
+  "callback_signing_secret": null
+}

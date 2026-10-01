@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+.state/
+*.sqlite3*
+*.db*
+*.log
+config.json
+config.local.json
+.env*
+!.env.example
+*.pem
+*.key
