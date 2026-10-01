@@ -1,5 +1,6 @@
 """Official lark-oapi builders and WSClient; no alternative AI model."""
 import json
+import logging
 import threading
 import time
 
@@ -60,4 +61,6 @@ def start_ws(app_id,app_secret,adapter):
 def delivery_worker(adapter,stop):
     while not stop.wait(1):
         try: adapter.drain()
-        except Exception: pass  # no secret-bearing diagnostics; queue remains persistent
+        except Exception:
+            logging.getLogger(__name__).error('Delivery state update failed; worker backing off')
+            if stop.wait(30): return  # persistence failure: bounded worker frequency

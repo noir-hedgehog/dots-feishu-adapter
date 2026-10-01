@@ -8,6 +8,9 @@ import time
 def b64(text):
     return base64.urlsafe_b64decode(text+'='*((-len(text))%4))
 
+class InsufficientScope(PermissionError):
+    pass
+
 class OAuthVerifier:
     def __init__(self,issuer,audience,subject,jwks_url,network,clock=time.time):
         self.issuer,self.audience,self.subject=issuer,audience,subject
@@ -33,6 +36,7 @@ class OAuthVerifier:
             if n.bit_length()<2048: raise ValueError()
             rsa.RSAPublicNumbers(e,n).public_key().verify(b64(parts[2]),(parts[0]+'.'+parts[1]).encode(),padding.PKCS1v15(),hashes.SHA256())
             return self.validate_claims(claims)
+        except InsufficientScope: raise
         except Exception:
             raise PermissionError('Invalid access token') from None
     def validate_claims(self,claims):
@@ -44,5 +48,21 @@ class OAuthVerifier:
         if not isinstance(not_before,(float,int)) or not_before>now: raise PermissionError('Token not active')
         if claims.get('iss')!=self.issuer or not audience_match or claims.get('sub')!=self.subject:
             raise PermissionError('Token identity rejected')
-        if 'feishu:chat' not in str(claims.get('scope','')).split(): raise PermissionError('Scope missing')
+        if 'feishu:chat' not in str(claims.get('scope','')).split(): raise InsufficientScope('Scope missing')
         return self.subject
+
+class IntrospectionAuthorization:
+    """RFC 7662: approved resource-server credential, separate from user token."""
+    def __init__(self,verifier,url,credential,network):
+        self.verifier,self.url,self.credential,self.network=verifier,url,credential,network
+        network.validate_url(url)
+    def __call__(self,authorization):
+        from urllib.parse import urlencode
+        subject=self.verifier(authorization)
+        status,body=self.network.request(self.url,'POST',urlencode({'token':authorization[7:],'token_type_hint':'access_token'}).encode(),
+          {'Authorization':'Bearer '+self.credential,'Content-Type':'application/x-www-form-urlencoded'})
+        if status!=200:raise PermissionError('Authorization status unavailable')
+        claims=json.loads(body)
+        if claims.get('active') is not True:raise PermissionError('Authorization revoked')
+        self.verifier.validate_claims(claims)
+        return subject

@@ -3,7 +3,8 @@ No legacy sessions, SSE/list changes, sampling or elicitation are advertised.
 """
 import base64
 import json
-from adapter import VERSION,encoded
+from adapter import VERSION,encoded,CallbackVerificationError
+from deploy.auth import InsufficientScope
 
 class HTTPApplication:
     def __init__(self,adapter,authenticate,resource,issuer,allowed_origins):
@@ -26,6 +27,8 @@ class HTTPApplication:
         if path!='/mcp': return self.respond(404)
         if method!='POST': return self.respond(405,extra={'Allow':'POST'})
         try: principal=self.authenticate(h.get('authorization',''))
+        except InsufficientScope:
+            return self.respond(403,extra={'WWW-Authenticate':'Bearer error="insufficient_scope", scope="feishu:chat"'})
         except Exception:
             # Metadata URL is public configuration, not supplied by the caller.
             from urllib.parse import urlsplit
@@ -63,10 +66,13 @@ class HTTPApplication:
             if req['method']=='ping': result={}
             else:
                 if req['method'] in ('server/discover','events/list','tools/list') and clean.get('cursor') is not None: raise ValueError('Cursor unsupported')
-                result=self.adapter.rpc(principal,req['method'],clean)
+                if req['method']=='events/subscribe' and hasattr(self.adapter,'subscribe_authorized'):
+                    result=self.adapter.subscribe_authorized(principal,clean,h.get('authorization',''))
+                else:result=self.adapter.rpc(principal,req['method'],clean)
             result={'resultType':'complete',**result,'_meta':{'io.modelcontextprotocol/serverInfo':{'name':'feishu-direct','version':'0.2'}}}
             if req['method'] in ('server/discover','tools/list'): result.update(ttlMs=60000,cacheScope='private')
             return self.respond(200,{'jsonrpc':'2.0','id':rid,'result':result})
+        except CallbackVerificationError as error: return self.error(400,-32015,'Callback endpoint verification failed',rid,{'reason':error.reason})
         except PermissionError: return self.error(403,-32602,'Access rejected',rid)
         except (ValueError,TypeError,KeyError,AttributeError):
             if req['method']=='tools/call' and clean.get('name') in ('send_message','reply_to_message'):

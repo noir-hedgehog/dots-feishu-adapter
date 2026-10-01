@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import secrets
+import ssl
 import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -11,6 +12,10 @@ from urllib.parse import urlsplit
 
 VERSION = '2026-07-28'
 EVENT = 'message.created'
+
+class CallbackVerificationError(ValueError):
+    def __init__(self,reason):
+        super().__init__('Callback verification failed'); self.reason=reason
 
 def encoded(value):
     return json.dumps(value, separators=(',', ':'), ensure_ascii=False).encode()
@@ -77,6 +82,7 @@ class Adapter:
         self.clock = clock
         # Ephemeral only. Restart invalidates subscriptions, dedup and associations.
         self.subscriptions, self.messages, self.outbox, self.sent = {}, {}, {}, {}
+        self.delivery_counts = {}
     def authorize(self, principal):
         if principal != self.owner: raise PermissionError('Unauthorized principal')
     def filters(self, params):
@@ -104,9 +110,11 @@ class Adapter:
         challenge = secrets.token_urlsafe(32)
         body = encoded({'type':'verification','challenge':challenge})
         headers = signed_headers(secret,'verify_'+secrets.token_hex(16),body,int(self.clock()),sid)
-        status, response = self.callback.post(url, body, headers)
+        try: status, response = self.callback.post(url, body, headers)
+        except TimeoutError: raise CallbackVerificationError('timeout') from None
+        except Exception: raise CallbackVerificationError('connection_failed') from None
         if not 200 <= status < 300 or not hmac.compare_digest(str(response.get('challenge','')),challenge):
-            raise ValueError('Callback verification failed')
+            raise CallbackVerificationError('challenge_failed')
         previous=self.subscriptions.get(sid)
         self.subscriptions[sid] = {'owner':principal,'url':url,'secret':secret,'expires':expiration}
         if previous and previous['secret']!=secret and previous['expires']>self.clock():
@@ -136,25 +144,46 @@ class Adapter:
         for sid,sub in self.subscriptions.items():
             if sub['expires']>self.clock(): self.outbox[(sid,event['eventId'])]={'event':event,'attempts':0,'due':self.clock()}
         return {'duplicate':False,'queued':len(self.outbox)}
-    def drain(self):
-        for key,item in list(self.outbox.items()):
-            sid, eid = key; sub = self.subscriptions.get(sid)
-            if not sub or sub['expires']<=self.clock(): del self.outbox[key]; continue
-            if item['due']>self.clock(): continue
-            body = encoded(item['event'])
-            headers = signed_headers(sub['secret'],eid,body,int(self.clock()),sid)
+    def terminal(self, key, reason):
+        self.outbox.pop(key,None)
+        self.delivery_counts[reason]=self.delivery_counts.get(reason,0)+1
+    def drain_one(self,key):
+        item=self.outbox.get(key)
+        if not item: return
+        sid,eid=key; sub=self.subscriptions.get(sid)
+        if not sub or sub['expires']<=self.clock():
+            self.terminal(key,'expired'); return
+        if item['due']>self.clock(): return
+        item['attempts']+=1
+        status=None; reason='unexpected_error'; permanent=False
+        try:
+            body=encoded(item['event'])
+            headers=signed_headers(sub['secret'],eid,body,int(self.clock()),sid)
             if sub.get('rotation_until',0)>self.clock():
                 headers['webhook-signature']+=' '+signed_headers(sub['previous_secret'],eid,body,int(self.clock()),sid)['webhook-signature']
             else:
                 sub.pop('previous_secret',None); sub.pop('rotation_until',None)
-            try: status,_ = self.callback.post(sub['url'],body,headers)
-            except (TimeoutError,ConnectionError): status = 503
-            item['attempts']+=1
-            if 200<=status<300 or status in (410,413) or (400<=status<500 and status!=429) or item['attempts']>=3:
-                del self.outbox[key]
-                if status==410: self.subscriptions.pop(sid,None)
-            else: item['due']=self.clock()+2**item['attempts']
-        return {'pending':len(self.outbox)}
+            status,_=self.callback.post(sub['url'],body,headers)
+            reason='http_error'
+        except ssl.SSLCertVerificationError:
+            reason='tls_certificate_rejected'; permanent=True
+        except ValueError:
+            reason='destination_or_payload_rejected'; permanent=True
+        except ssl.SSLError: reason='tls_transport_error'
+        except OSError: reason='network_error'
+        except Exception: pass  # bounded unknown failures; never persist exception text
+        if status is not None and 200<=status<300:
+            self.terminal(key,'delivered'); return
+        if status==410: self.subscriptions.pop(sid,None)
+        if permanent or status in (410,413) or (status is not None and 400<=status<500 and status!=429):
+            self.terminal(key,reason); return
+        if item['attempts']>=3:
+            self.terminal(key,reason+'_exhausted'); return
+        item['last_error']=reason
+        item['due']=self.clock()+2**item['attempts']
+    def drain(self):
+        for key in list(self.outbox): self.drain_one(key)
+        return {'pending':len(self.outbox),'outcomes':dict(self.delivery_counts)}
     def send(self, principal, args, reply=False):
         self.authorize(principal)
         required = {'chat_id','text','idempotency_key'} | ({'message_id'} if reply else set())

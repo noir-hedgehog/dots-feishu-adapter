@@ -25,7 +25,7 @@ python3 -m venv .venv
 .venv/bin/python -m deploy.run
 ```
 
-`verify.py` fails if any test is skipped. Tests need no live credentials or sockets. On the authoring Mac: all 34 tests passed with zero skips, including real official SDK builders, authenticated encryption and RS256 verification. Compilation and mock lifecycle passed. Official dependencies were installed into the project virtual environment through the formal approval mechanism with the existing proxy configuration preserved. No Feishu/ChatGPT end-to-end session or live OAuth integration was performed.
+`verify.py` fails if any test is skipped. Tests need no live credentials or sockets. On the authoring Mac: all 40 tests passed with zero skips, including real official SDK builders, authenticated encryption and RS256 verification. Compilation and mock lifecycle passed. Official dependencies were installed into the project virtual environment through the formal approval mechanism with the existing proxy configuration preserved. No Feishu/ChatGPT end-to-end session or live OAuth integration was performed.
 
 ## Deployment prerequisites (not performed)
 
@@ -47,3 +47,11 @@ No secrets were configured, no security settings changed, no live subscriptions 
 - [Connecting plugins to ChatGPT](https://developers.openai.com/plugins/deploy/connect-chatgpt)
 
 All source in this repository is newly written adapter code; no upstream plugin source was vendored. `requirements.lock.txt` records the successfully tested dependency versions; use it for reproducible installation and review updates before deployment.
+
+## Delivery and authorization boundaries
+
+Callback work is isolated per event, committed separately, with a maximum of three attempts. Permanent destination/certificate rejection is terminal. Encrypted aggregate outcome counters and per-queued-event error categories contain no exception text or URLs. A later failure cannot roll back a previously committed callback acknowledgement. Network calls, challenge verification and provider sends run outside the shared storage lock, allowing incoming SDK events to persist promptly.
+
+Deployment now requires an approved RFC 7662 token introspection endpoint and a separately issued resource-server credential, entered at the hidden startup prompt. The provider must return active status plus the issuer/audience/subject/expiry/scope claims used by this resource. Every delivery rechecks authorization, including queued work after restart. Revoked, expired or unavailable authorization cancels the subscription and its pending events; reconnect requires an authenticated new subscription. `revoke(owner)` provides an explicit local disconnect operation. Introspection outages fail closed and require resubscription. No revocation listener, endpoint, credential or service has been configured here.
+
+Delivery is bounded at-least-once with retry exhaustion: failures can terminate undelivered events. A crash or storage failure after a remote endpoint accepts an event but before the local commit can cause repetition; receivers must deduplicate stable eventId. Provider send ambiguity relies on Feishu's limited UUID deduplication window. Revocation/unsubscribe cannot recall an HTTP request already in flight. No exactly-once guarantee is made.

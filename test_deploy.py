@@ -4,6 +4,8 @@ import json
 import os
 import secrets
 import socket
+import ssl
+import threading
 import tempfile
 import unittest
 from pathlib import Path
@@ -109,6 +111,80 @@ class DeployTests(unittest.TestCase):
             self.assertFalse(c.subscriptions); c.send('mock-owner',args,True); self.assertFalse(c.feishu.calls)
             with self.assertRaises(ValueError): DurableAdapter(store,user='other')
             store.close()
+    def fixture_durable(self,root):
+        store=Store(Path(root)/'state.sqlite3',TestCipher());a=DurableAdapter(store)
+        for suffix in ('first','second'):
+            a.subscribe('mock-owner',{'name':'message.created','arguments':{'chat_id':'mock-dm'},'delivery':{'mode':'webhook','url':'https://callback.example.com/'+suffix,'secret':self.secret}})
+        message={'chat_type':'p2p','sender_type':'user','sender_id':'mock-user','chat_id':'mock-dm','message_type':'text','message_id':'synthetic','text':'synthetic'}
+        a.inject('mock-owner',message);return store,a,message
+    def test_network_failures_bounded_and_isolated(self):
+        for failure in (socket.gaierror(),ssl.SSLError(),ssl.SSLCertVerificationError(),ValueError(),RuntimeError()):
+            with self.subTest(error=type(failure).__name__),tempfile.TemporaryDirectory() as root:
+                store,a,_=self.fixture_durable(root);now=[a.clock()+1];a.clock=lambda:now[0];calls=[]
+                def post(url,*args):
+                    calls.append(url)
+                    if url.endswith('/first'):raise failure
+                    return 200,{}
+                a.callback.post=post
+                for _ in range(5):a.drain();now[0]+=10
+                self.assertFalse(a.outbox);self.assertEqual(calls.count('https://callback.example.com/second'),1)
+                self.assertLessEqual(calls.count('https://callback.example.com/first'),3);store.close()
+    def test_success_survives_later_failed_commit(self):
+        with tempfile.TemporaryDirectory() as root:
+            store,a,_=self.fixture_durable(root);save=store.save;count=[0]
+            def flaky(state):
+                count[0]+=1
+                if count[0]==2:raise OSError()
+                save(state)
+            store.save=flaky
+            with self.assertRaises(OSError):a.drain()
+            store.close();store=Store(Path(root)/'state.sqlite3',TestCipher());restored=DurableAdapter(store)
+            self.assertEqual(len(restored.outbox),1);self.assertEqual(restored.delivery_counts['delivered'],1);store.close()
+    def test_slow_callback_and_send_do_not_block_ingress(self):
+        for operation in ('callback','send'):
+            with self.subTest(operation=operation),tempfile.TemporaryDirectory() as root:
+                store,a,message=self.fixture_durable(root);started=threading.Event();release=threading.Event();errors=[]
+                def slow(*args):started.set();release.wait(3);return (200,{}) if operation=='callback' else {'message_id':'synthetic-out'}
+                if operation=='callback':a.callback.post=slow;work=a.drain
+                else:a.feishu.send=slow;work=lambda:a.send('mock-owner',{'chat_id':'mock-dm','text':'synthetic','idempotency_key':'synthetic'})
+                def run():
+                    try:work()
+                    except Exception as error:errors.append(type(error).__name__)
+                thread=threading.Thread(target=run);thread.start();self.assertTrue(started.wait(1))
+                admitted=threading.Event()
+                def inject():a.inject('mock-owner',{**message,'message_id':'next'});admitted.set()
+                inbound=threading.Thread(target=inject);inbound.start()
+                try:self.assertTrue(admitted.wait(.5),'network blocked durable ingress')
+                finally:release.set();thread.join(3);inbound.join(3)
+                self.assertFalse(errors);self.assertIn('next',store.load()['messages']);store.close()
+    def test_revocation_disconnect_and_fail_closed(self):
+        with tempfile.TemporaryDirectory() as root:
+            store,a,_=self.fixture_durable(root);before=len(a.callback.calls)
+            a.check_authorization=lambda token:None;a.drain()
+            self.assertFalse(a.subscriptions);self.assertFalse(a.outbox);self.assertEqual(len(a.callback.calls),before)
+            self.assertEqual(a.delivery_counts['authorization_revoked'],2);store.close()
+    def test_introspection_inactive_unavailable_and_disconnect(self):
+        from deploy.auth import IntrospectionAuthorization
+        verifier=NS(validate_claims=lambda claims:None)
+        class Verify:
+            def __call__(self,value):return 'owner'
+            def validate_claims(self,claims):
+                if claims.get('sub')!='owner':raise PermissionError()
+        responses=[(200,encoded({'active':True,'sub':'owner'})),(200,encoded({'active':False})),(503,b'{}')]
+        net=NS(validate_url=lambda _:None,request=lambda *args:responses.pop(0))
+        auth=IntrospectionAuthorization(Verify(),'https://identity.example.com/introspect','synthetic-resource-credential',net)
+        self.assertEqual(auth('Bearer synthetic-user-token'),'owner')
+        for _ in range(2):
+            with self.assertRaises(PermissionError):auth('Bearer synthetic-user-token')
+        with tempfile.TemporaryDirectory() as root:
+            store,a,_=self.fixture_durable(root);a.revoke('mock-owner');self.assertFalse(a.outbox);self.assertFalse(a.subscriptions);store.close()
+    def test_callback_protocol_error_and_insufficient_scope(self):
+        self.a.callback.bad_challenge=True
+        req,h=self.rpc('events/subscribe',{'name':'message.created','arguments':{'chat_id':'mock-dm'},'delivery':{'mode':'webhook','url':'https://callback.example.com/events','secret':self.secret}})
+        error=json.loads(self.request(req,h)[2])['error'];self.assertEqual(error['code'],-32015);self.assertIn('reason',error['data'])
+        from deploy.auth import InsufficientScope
+        def reject(_):raise InsufficientScope()
+        self.app.authenticate=reject;self.assertEqual(self.request(req,h)[0],403)
     def test_sdk_port_normalization_and_model_calls(self):
         class Builder:
             def __init__(self): self.values={}
