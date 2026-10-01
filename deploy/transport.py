@@ -4,7 +4,7 @@ No legacy sessions, SSE/list changes, sampling or elicitation are advertised.
 import base64
 import json
 from adapter import VERSION,encoded,CallbackVerificationError
-from deploy.auth import InsufficientScope
+from deploy.auth import InsufficientScope,AuthorizationUnavailable
 
 class HTTPApplication:
     def __init__(self,adapter,authenticate,resource,issuer,allowed_origins):
@@ -27,6 +27,8 @@ class HTTPApplication:
         if path!='/mcp': return self.respond(404)
         if method!='POST': return self.respond(405,extra={'Allow':'POST'})
         try: principal=self.authenticate(h.get('authorization',''))
+        except AuthorizationUnavailable:
+            return self.respond(503,extra={'Retry-After':'5'})
         except InsufficientScope:
             return self.respond(403,extra={'WWW-Authenticate':'Bearer error="insufficient_scope", scope="feishu:chat"'})
         except Exception:
@@ -67,7 +69,8 @@ class HTTPApplication:
             else:
                 if req['method'] in ('server/discover','events/list','tools/list') and clean.get('cursor') is not None: raise ValueError('Cursor unsupported')
                 if req['method']=='events/subscribe' and hasattr(self.adapter,'subscribe_authorized'):
-                    result=self.adapter.subscribe_authorized(principal,clean,h.get('authorization',''))
+                    expiry=self.authenticate.authorization_expiry() if hasattr(self.authenticate,'authorization_expiry') else None
+                    result=self.adapter.subscribe_authorized(principal,clean,h.get('authorization',''),expiry)
                 else:result=self.adapter.rpc(principal,req['method'],clean)
             result={'resultType':'complete',**result,'_meta':{'io.modelcontextprotocol/serverInfo':{'name':'feishu-direct','version':'0.2'}}}
             if req['method'] in ('server/discover','tools/list'): result.update(ttlMs=60000,cacheScope='private')

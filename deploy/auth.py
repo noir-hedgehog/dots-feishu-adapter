@@ -4,9 +4,13 @@ Authorization server is an existing user-approved external OAuth provider.
 import base64
 import json
 import time
+import threading
 
 def b64(text):
     return base64.urlsafe_b64decode(text+'='*((-len(text))%4))
+
+class AuthorizationUnavailable(OSError):
+    pass
 
 class InsufficientScope(PermissionError):
     pass
@@ -27,8 +31,9 @@ class OAuthVerifier:
             if len(parts)!=3: raise ValueError()
             header,claims=json.loads(b64(parts[0])),json.loads(b64(parts[1]))
             if header.get('alg')!='RS256' or not isinstance(header.get('kid'),str) or header.get('crit'): raise ValueError()
-            status,data=self.network.request(self.jwks_url)
-            if status!=200: raise ValueError()
+            try:status,data=self.network.request(self.jwks_url)
+            except Exception:raise AuthorizationUnavailable('JWKS status unavailable') from None
+            if status!=200:raise AuthorizationUnavailable('JWKS status unavailable')
             keys=json.loads(data)['keys']
             matches=[k for k in keys if k.get('kid')==header['kid'] and k.get('kty')=='RSA' and k.get('use','sig')=='sig' and k.get('alg','RS256')=='RS256']
             if len(matches)!=1: raise ValueError()
@@ -36,7 +41,7 @@ class OAuthVerifier:
             if n.bit_length()<2048: raise ValueError()
             rsa.RSAPublicNumbers(e,n).public_key().verify(b64(parts[2]),(parts[0]+'.'+parts[1]).encode(),padding.PKCS1v15(),hashes.SHA256())
             return self.validate_claims(claims)
-        except InsufficientScope: raise
+        except (InsufficientScope,AuthorizationUnavailable): raise
         except Exception:
             raise PermissionError('Invalid access token') from None
     def validate_claims(self,claims):
@@ -56,13 +61,22 @@ class IntrospectionAuthorization:
     def __init__(self,verifier,url,credential,network):
         self.verifier,self.url,self.credential,self.network=verifier,url,credential,network
         network.validate_url(url)
+        self.context=threading.local()
+    def authorization_expiry(self):
+        return self.context.expiry
     def __call__(self,authorization):
         from urllib.parse import urlencode
         subject=self.verifier(authorization)
-        status,body=self.network.request(self.url,'POST',urlencode({'token':authorization[7:],'token_type_hint':'access_token'}).encode(),
+        try:status,body=self.network.request(self.url,'POST',urlencode({'token':authorization[7:],'token_type_hint':'access_token'}).encode(),
           {'Authorization':'Bearer '+self.credential,'Content-Type':'application/x-www-form-urlencoded'})
-        if status!=200:raise PermissionError('Authorization status unavailable')
-        claims=json.loads(body)
+        except Exception:raise AuthorizationUnavailable('Authorization status unavailable') from None
+        if status!=200:raise AuthorizationUnavailable('Authorization status unavailable')
+        try:claims=json.loads(body)
+        except (ValueError,TypeError):raise AuthorizationUnavailable('Authorization response invalid') from None
+        if not isinstance(claims,dict) or 'active' not in claims:raise AuthorizationUnavailable('Authorization response invalid')
         if claims.get('active') is not True:raise PermissionError('Authorization revoked')
         self.verifier.validate_claims(claims)
+        # Both signatures/status were verified above; never extend either lifetime.
+        token_claims=json.loads(b64(authorization[7:].split('.')[1]))
+        self.context.expiry=min(claims['exp'],token_claims['exp'])
         return subject

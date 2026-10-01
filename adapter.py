@@ -99,7 +99,8 @@ class Adapter:
         url, secret = delivery.get('url', ''), delivery.get('secret', '')
         parsed = urlsplit(url)
         if delivery.get('mode') != 'webhook': raise ValueError('Webhook delivery required')
-        self.callback.validate_url(url)
+        try:self.callback.validate_url(url)
+        except (ValueError,TypeError):raise CallbackVerificationError('destination_rejected') from None
         key_bytes(secret)
         ttl = params.get('ttlMs', 3600000)
         if ttl is None: ttl = 3600000  # never grant indefinite access
@@ -113,7 +114,7 @@ class Adapter:
         try: status, response = self.callback.post(url, body, headers)
         except TimeoutError: raise CallbackVerificationError('timeout') from None
         except Exception: raise CallbackVerificationError('connection_failed') from None
-        if not 200 <= status < 300 or not hmac.compare_digest(str(response.get('challenge','')),challenge):
+        if not isinstance(response,dict) or not 200 <= status < 300 or not hmac.compare_digest(str(response.get('challenge','')),challenge):
             raise CallbackVerificationError('challenge_failed')
         previous=self.subscriptions.get(sid)
         self.subscriptions[sid] = {'owner':principal,'url':url,'secret':secret,'expires':expiration}

@@ -170,14 +170,49 @@ class DeployTests(unittest.TestCase):
             def __call__(self,value):return 'owner'
             def validate_claims(self,claims):
                 if claims.get('sub')!='owner':raise PermissionError()
-        responses=[(200,encoded({'active':True,'sub':'owner'})),(200,encoded({'active':False})),(503,b'{}')]
+        responses=[(200,encoded({'active':True,'sub':'owner','exp':1900})),(200,encoded({'active':False})),(503,b'{}')]
         net=NS(validate_url=lambda _:None,request=lambda *args:responses.pop(0))
         auth=IntrospectionAuthorization(Verify(),'https://identity.example.com/introspect','synthetic-resource-credential',net)
-        self.assertEqual(auth('Bearer synthetic-user-token'),'owner')
+        self.assertEqual(auth('Bearer header.'+base64.urlsafe_b64encode(encoded({'exp':2000})).rstrip(b'=').decode()+'.signature'),'owner')
         for _ in range(2):
-            with self.assertRaises(PermissionError):auth('Bearer synthetic-user-token')
+            with self.assertRaises((PermissionError,OSError)):auth('Bearer header.'+base64.urlsafe_b64encode(encoded({'exp':2000})).rstrip(b'=').decode()+'.signature')
         with tempfile.TemporaryDirectory() as root:
             store,a,_=self.fixture_durable(root);a.revoke('mock-owner');self.assertFalse(a.outbox);self.assertFalse(a.subscriptions);store.close()
+    def test_short_authorization_expiry_and_renewal(self):
+        from datetime import datetime
+        with tempfile.TemporaryDirectory() as root:
+            store=Store(Path(root)/'state.sqlite3',TestCipher());now=[1000];a=DurableAdapter(store,clock=lambda:now[0])
+            p={'name':'message.created','arguments':{'chat_id':'mock-dm'},'delivery':{'mode':'webhook','url':'https://callback.example.com/events','secret':self.secret}}
+            result=a.subscribe_authorized('mock-owner',p,'synthetic-old',1120)
+            self.assertEqual(datetime.fromisoformat(result['refreshBefore']).timestamp(),1090)
+            sid=result['id'];self.assertEqual(a.subscriptions[sid]['expires'],1090)
+            with self.assertRaises(ValueError):a.subscribe_authorized('mock-owner',p,'synthetic-short',1035)
+            now[0]=1080;fresh=a.subscribe_authorized('mock-owner',p,'synthetic-new',1300)
+            self.assertEqual(fresh['id'],sid);self.assertEqual(a.subscriptions[sid]['authorization'],'synthetic-new')
+            self.assertEqual(datetime.fromisoformat(fresh['refreshBefore']).timestamp(),1270)
+            now[0]=1280
+            a.inject('mock-owner',{'chat_type':'p2p','sender_type':'user','sender_id':'mock-user','chat_id':'mock-dm','message_type':'text','message_id':'after-auth','text':'synthetic'})
+            self.assertFalse(a.outbox)
+            a.revoke('mock-owner');self.assertFalse(a.subscriptions);store.close()
+    def test_authorization_outage_preserves_queue_until_recovery(self):
+        from deploy.auth import AuthorizationUnavailable
+        with tempfile.TemporaryDirectory() as root:
+            store,a,_=self.fixture_durable(root);now=[a.clock()+1];a.clock=lambda:now[0]
+            calls=[0]
+            def unavailable(_):calls[0]+=1;raise AuthorizationUnavailable()
+            a.check_authorization=unavailable;a.drain();self.assertEqual(len(a.outbox),2);self.assertEqual(len(a.subscriptions),2)
+            a.drain();self.assertEqual(calls[0],2)
+            now[0]+=3;a.check_authorization=lambda _:'mock-owner';a.drain()
+            self.assertFalse(a.outbox);self.assertEqual(a.delivery_counts['delivered'],2);store.close()
+    def test_nonobject_challenge_and_invalid_destination_are_callback_errors(self):
+        self.a.callback.post=lambda *args:(200,[])
+        p={'name':'message.created','arguments':{'chat_id':'mock-dm'},'delivery':{'mode':'webhook','url':'https://callback.example.com/events','secret':self.secret}}
+        for value in ([],None):
+            self.a.callback.post=lambda *args:(200,value)
+            req,h=self.rpc('events/subscribe',p);error=json.loads(self.request(req,h)[2])['error']
+            self.assertEqual(error['code'],-32015);self.assertEqual(error['data']['reason'],'challenge_failed')
+        p['delivery']['url']='http://callback.example.com/events'
+        req,h=self.rpc('events/subscribe',p);self.assertEqual(json.loads(self.request(req,h)[2])['error']['code'],-32015)
     def test_callback_protocol_error_and_insufficient_scope(self):
         self.a.callback.bad_challenge=True
         req,h=self.rpc('events/subscribe',{'name':'message.created','arguments':{'chat_id':'mock-dm'},'delivery':{'mode':'webhook','url':'https://callback.example.com/events','secret':self.secret}})

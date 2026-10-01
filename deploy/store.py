@@ -1,12 +1,14 @@
 """Authenticated encrypted SQLite snapshot; key supplied by secure host at startup."""
 import json
 import copy
+from datetime import datetime,timezone
 import os
 import sqlite3
 import stat
 import threading
 from pathlib import Path
 from adapter import Adapter
+from deploy.auth import AuthorizationUnavailable
 
 class Store:
     def __init__(self,path,cipher):
@@ -55,12 +57,27 @@ class DurableAdapter(Adapter):
                 self.delivery_counts=old['delivery_counts']; self.subscriptions=old['subscriptions']; self.messages=old['messages']; self.sent=old['sent']; self.outbox={tuple(k):v for k,v in old['outbox']}
                 raise
     def subscribe(self,*args): return self.subscribe_authorized(*args)
-    def subscribe_authorized(self,principal,params,token=None):
+    def subscribe_authorized(self,principal,params,token=None,authorization_expiry=None):
+        params=copy.deepcopy(params)
+        if authorization_expiry is not None:
+            # Refresh before either authorization ends; do not invent a minimum TTL.
+            available_ms=int((authorization_expiry-self.clock()-30)*1000)
+            if available_ms<10000:raise ValueError('Authorization lifetime too short; obtain a fresh token')
+            requested=params.get('ttlMs',3600000)
+            if requested is None:requested=3600000
+            if isinstance(requested,bool) or not isinstance(requested,int) or requested<=0:raise ValueError('Invalid TTL')
+            params['ttlMs']=min(requested,available_ms)
         args=(principal,params)
         with self.network_lock:
             with self.lock:clone=self.isolated()
             result=clone.subscribe(*args)
             if token is not None:clone.subscriptions[result['id']]['authorization']=token
+            if authorization_expiry is not None:
+                subscription=clone.subscriptions[result['id']]
+                subscription['authorization_expiry']=authorization_expiry
+                subscription['expires']=min(subscription['expires'],authorization_expiry-30)
+                if subscription['expires']-self.clock()<10:raise ValueError('Authorization expired during verification; obtain a fresh token')
+                result['refreshBefore']=datetime.fromtimestamp(subscription['expires'],timezone.utc).isoformat()
             def commit():self.subscriptions[result['id']]=clone.subscriptions[result['id']]
             self.mutate(commit);return result
     def unsubscribe(self,*args): return self.mutate(super().unsubscribe,*args)
@@ -87,8 +104,16 @@ class DurableAdapter(Adapter):
                 with self.lock:
                     if key not in self.outbox:continue
                     clone=self.isolated(); original=copy.deepcopy(self.outbox[key]); sub=copy.deepcopy(self.subscriptions.get(key[0]))
-                if self.check_authorization:
+                if sub and sub['expires']>self.clock() and original.get('authorization_due',0)>self.clock():continue
+                if self.check_authorization and sub and sub['expires']>self.clock():
                     try: approved=self.check_authorization(sub.get('authorization',''))==self.owner
+                    except AuthorizationUnavailable:
+                        def pause():
+                            current=self.outbox.get(key)
+                            if current!=original:return
+                            count=min(current.get('authorization_attempts',0)+1,6)
+                            current.update(authorization_attempts=count,authorization_due=self.clock()+min(2**count,60),last_error='authorization_unavailable')
+                        self.mutate(pause);continue
                     except Exception: approved=False
                     if not approved:
                         def disconnect():
