@@ -47,7 +47,7 @@ def normalized(event):
             'message_type':message.message_type,'message_id':message.message_id,
             'text':json.loads(message.content).get('text','') if message.message_type=='text' else ''}
 
-def start_ws(app_id,app_secret,adapter):
+def start_ws(app_id,app_secret,adapter,on_client=None):
     import lark_oapi as lark
     def on_message(event):
         # Callback promptly persists admission; delivery is a separate worker.
@@ -56,6 +56,9 @@ def start_ws(app_id,app_secret,adapter):
         # Persistence/parse errors propagate so SDK delivery can be retried.
     dispatcher=lark.EventDispatcherHandler.builder('','').register_p2_im_message_receive_v1(on_message).build()
     client=lark.ws.Client(app_id,app_secret,event_handler=dispatcher,log_level=lark.LogLevel.ERROR)
+    # SDK errors may include signed WS URLs; never send them to service logs.
+    logging.getLogger("Lark").disabled=True
+    if on_client: on_client(client)
     client.start()
 
 def delivery_worker(adapter,stop):

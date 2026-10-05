@@ -57,3 +57,7 @@ Deployment now requires an approved RFC 7662 token introspection endpoint and a 
 Delivery is bounded at-least-once with retry exhaustion: failures can terminate undelivered events. A crash or storage failure after a remote endpoint accepts an event but before the local commit can cause repetition; receivers must deduplicate stable eventId. Provider send ambiguity relies on Feishu's limited UUID deduplication window. Revocation/unsubscribe cannot recall an HTTP request already in flight. No exactly-once guarantee is made.
 
 Subscription refreshBefore is capped at the earlier verified token/introspection expiry minus 30 seconds. Tokens with less than 40 seconds remaining are rejected; a challenge that consumes the remaining window also causes rejection. Renewal stores the newly verified token and its expiry. No extra expiresAt field is invented; clients use the documented refreshBefore field.
+
+## Avalon service preparation (2026-10-05)
+
+[Deployment handoff](ops/AVALON.md) records the verified target, official client version, installed service paths, user-controlled credential entry and remaining connection gates. The service launcher now supports a protected systemd credential directory. Health endpoints expose transport status and aggregate counts only; SDK error logging is suppressed because it can include signed connection URLs. Service and logrotate templates are in `ops/`. This preparation does not establish a live Feishu/dot session. Run `verify.py` for all 46 offline tests.

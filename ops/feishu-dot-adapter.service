@@ -1,0 +1,27 @@
+[Unit]
+Description=Private Feishu MCP Events adapter
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/feishu-dot/approved
+StartLimitIntervalSec=0
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/apps/feishu-dot-adapter
+LoadCredential=state_key:/etc/feishu-dot/credentials/state_key
+LoadCredential=feishu_app_secret:/etc/feishu-dot/credentials/feishu_app_secret
+LoadCredential=oauth_introspection:/etc/feishu-dot/credentials/oauth_introspection
+ExecStart=/opt/apps/feishu-dot-adapter/.venv/bin/python -m deploy.run --config /etc/feishu-dot/config.json --run --credential-dir %d
+Restart=always
+RestartSec=10
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/feishu-dot /var/log/feishu-dot
+StandardOutput=append:/var/log/feishu-dot/adapter.log
+StandardError=append:/var/log/feishu-dot/adapter.log
+[Install]
+WantedBy=multi-user.target

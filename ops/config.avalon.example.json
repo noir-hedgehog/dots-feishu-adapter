@@ -1,0 +1,18 @@
+{
+  "resource": "https://adapter.example.com/mcp",
+  "oauth_issuer": "https://identity.example.com",
+  "oauth_jwks_url": "https://identity.example.com/.well-known/jwks.json",
+  "authorized_oauth_subject": "REPLACE_WITH_SINGLE_AUTHORIZED_SUBJECT",
+  "authorized_feishu_open_id": "REPLACE_WITH_AUTHORIZED_OPEN_ID",
+  "authorized_private_chat_id": "REPLACE_WITH_PRIVATE_CHAT_ID",
+  "feishu_app_id": "cli_a92f3828bc5c1cd1",
+  "allowed_callback_hosts": [
+    "REPLACE_WITH_VERIFIED_CHATGPT_CALLBACK_HOST"
+  ],
+  "allowed_origins": [
+    "https://chatgpt.com"
+  ],
+  "state_path": "/var/lib/feishu-dot/adapter.sqlite3",
+  "local_port": 8765,
+  "oauth_introspection_url": "https://identity.example.com/introspect"
+}
