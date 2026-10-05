@@ -61,3 +61,7 @@ Subscription refreshBefore is capped at the earlier verified token/introspection
 ## Avalon service preparation (2026-10-05)
 
 [Deployment handoff](ops/AVALON.md) records the verified target, official client version, installed service paths, user-controlled credential entry and remaining connection gates. The service launcher now supports a protected systemd credential directory. Health endpoints expose transport status and aggregate counts only; SDK error logging is suppressed because it can include signed connection URLs. Service and logrotate templates are in `ops/`. This preparation does not establish a live Feishu/dot session. Run `verify.py` for all 46 offline tests.
+
+## Opt-in personal Tunnel mode
+
+[Personal Tunnel handoff](ops/PERSONAL-TUNNEL.md) provides a single user-run enable command with explicit audience, credential persistence and startup confirmation. This mode requires the whole Tunnel's effective audience to be only the owner; it has no multi-user identity isolation. Default OAuth remains available. It adds local random-secret MCP authentication, WS-gated 600-second manual pairing, exact callback approvals from authenticated subscriptions, signed challenges and encrypted restart state. No additional OAuth service is required. All 60 offline tests pass; the agent has not activated live services or credentials.

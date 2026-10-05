@@ -99,9 +99,10 @@ class Adapter:
         url, secret = delivery.get('url', ''), delivery.get('secret', '')
         parsed = urlsplit(url)
         if delivery.get('mode') != 'webhook': raise ValueError('Webhook delivery required')
-        try:self.callback.validate_url(url)
-        except (ValueError,TypeError):raise CallbackVerificationError('destination_rejected') from None
         key_bytes(secret)
+        try:self.callback.validate_url(url)
+        except CallbackVerificationError:raise
+        except (ValueError,TypeError):raise CallbackVerificationError('destination_rejected') from None
         ttl = params.get('ttlMs', 3600000)
         if ttl is None: ttl = 3600000  # never grant indefinite access
         if isinstance(ttl, bool) or not isinstance(ttl, int) or ttl <= 0: raise ValueError('Invalid TTL')

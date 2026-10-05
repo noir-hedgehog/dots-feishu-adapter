@@ -58,6 +58,7 @@ def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--config',default='deploy/config.example.json')
     parser.add_argument('--run',action='store_true',help='Explicitly enable approved live connections; prompts for new secrets')
+    parser.add_argument('--auth-mode', choices=['oauth', 'tunnel-single-user'], default='oauth')
     parser.add_argument('--credential-dir', help='Protected directory, normally systemd CREDENTIALS_DIRECTORY')
     args=parser.parse_args()
     missing=[n for n in ('lark_oapi','cryptography') if importlib.util.find_spec(n) is None]
@@ -66,6 +67,10 @@ def main():
     if not args.run:
         print('Dependencies present. Network and ports remain disabled without --run.'); return 0
     config=json.loads(Path(args.config).read_text())
+    if args.auth_mode == 'tunnel-single-user':
+        from deploy.tunnel_runtime import run
+        run(config, args.credential_dir)
+        return 0
     serialized=json.dumps(config)
     if 'REPLACE_' in serialized or '.example.' in serialized: raise ValueError('Complete non-secret configuration before live startup')
     resource=urlsplit(config['resource']); issuer=urlsplit(config['oauth_issuer'])
