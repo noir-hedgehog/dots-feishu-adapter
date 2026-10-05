@@ -9,6 +9,9 @@ from deploy.tunnel import Control, ApprovedCallback
 
 CONFIRM = 'PERSONAL TUNNEL ONLY'
 
+def confirmation(prompt,expected):
+    return input(prompt).strip()==expected
+
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('action', choices=['confirm-audience', 'pair', 'callback', 'reset-pairing', 'revoke'])
@@ -43,7 +46,7 @@ def main():
         elif args.action == 'reset-pairing':
             if state.get('binding'): raise PermissionError('Existing pairing cannot be silently replaced')
             if state.get('pairing_deadline',0)>control.clock(): raise ValueError('Current window still active')
-            if input('Type RESET PAIRING to request a new 600-second window after WS OPEN: ') != 'RESET PAIRING': raise PermissionError('Not confirmed')
+            if not confirmation('Type RESET PAIRING to request a new 600-second window after WS OPEN: ', 'RESET PAIRING'): raise PermissionError('Not confirmed')
             control.update(lambda s:s.update(pairing_started=False,candidates={},pairing_deadline=0))
         elif args.action == 'revoke':
             if input('Type REVOKE to stop authorizing all Tunnel calls and deliveries: ') != 'REVOKE': raise PermissionError('Not confirmed')
