@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Never run by agent. User-only combined approval, provisioning and activation."""
 import getpass
+import argparse
 import json
 import os
 from pathlib import Path
@@ -11,9 +12,14 @@ from cryptography.fernet import Fernet
 from deploy.run import read_secret
 from deploy.store import Store
 from deploy.tunnel import Control
+from deploy.literal_env import read_literal_env
 
 
 def main():
+    parser=argparse.ArgumentParser()
+    parser.add_argument('--env-file', default='/etc/feishu-dot/.env', help='Protected literal .env file; never sourced')
+    parser.add_argument('--prompt', action='store_true', help='Use hidden prompts instead of the .env file')
+    args=parser.parse_args()
     if os.geteuid() != 0 or not os.isatty(0): raise ValueError('Root interactive terminal required')
     for unit in ('feishu-dot-adapter','feishu-dot-tunnel'):
         if subprocess.run(['systemctl','is-active','--quiet',unit]).returncode == 0:
@@ -27,9 +33,13 @@ def main():
     if input('Type ENABLE PERSONAL TUNNEL to approve all of the above: ') != 'ENABLE PERSONAL TUNNEL': raise PermissionError('Not approved')
     # Collect before mutation; never reuse old chats, attachments or authentication stores.
     values={}
-    for name in ('feishu_app_secret','control_plane_api_key'):
-        values[name]=getpass.getpass(name+' (hidden): ').strip()
-        if not values[name]: raise ValueError('Empty credential')
+    if not args.prompt:
+        _, env=read_literal_env(args.env_file)
+        values={'feishu_app_secret':env['FEISHU_APP_SECRET'],'control_plane_api_key':env['CONTROL_PLANE_API_KEY']}
+    else:
+        for name in ('feishu_app_secret','control_plane_api_key'):
+            values[name]=getpass.getpass(name+' (hidden): ').strip()
+            if not values[name]: raise ValueError('Empty credential')
     credentials.mkdir(mode=0o700,parents=True,exist_ok=True)
     if credentials.is_symlink(): raise ValueError('Symlink directory rejected')
     for name,generator in [('state_key',lambda:Fernet.generate_key().decode()), ('local_mcp_auth',lambda:secrets.token_hex(32))]:
