@@ -104,6 +104,10 @@ class Control:
 class ApprovedCallback:
     def __init__(self, control, factory=SafeHTTPS):
         self.control, self.factory = control, factory
+        self.diagnostic_lock=threading.Lock()
+        self.diagnostics={'challenge_attempts':0,'challenge_last_http_status':0}
+    def diagnostic_snapshot(self):
+        with self.diagnostic_lock:return dict(self.diagnostics)
     def transport(self, url):
         if not isinstance(url, str) or len(url) > 4096: raise ValueError('Invalid callback')
         host = urlsplit(url).hostname
@@ -117,7 +121,15 @@ class ApprovedCallback:
         if not self.control.callback(url): raise CallbackVerificationError('local_approval_pending')
     def post(self, url, body, headers):
         self.validate_url(url)
-        return self.transport(url).post(url, body, headers) # normal TLS, pinned IP, no redirects
+        verification=json.loads(body).get('type')=='verification'
+        if verification:
+            with self.diagnostic_lock:
+                self.diagnostics['challenge_attempts']+=1
+                self.diagnostics['challenge_last_http_status']=0
+        status,response=self.transport(url).post(url, body, headers) # normal TLS, pinned IP, no redirects
+        if verification:
+            with self.diagnostic_lock:self.diagnostics['challenge_last_http_status']=status
+        return status,response
 
 class LocalAuthorization:
     def __init__(self, secret, control):
@@ -137,7 +149,7 @@ class TunnelHTTP(HTTPApplication):
     def __init__(self,*args,**kwargs):
         super().__init__(*args,**kwargs)
         self.telemetry_lock=threading.Lock()
-        self.telemetry={'mcp_authenticated_requests':0,'mcp_tools_call_requests':0,'last_mcp_request_at':0}
+        self.telemetry={'subscribe_requests':0,'subscribe_last_http_status':0,'subscribe_last_rpc_code':0,'subscribe_last_reason':'none','mcp_authenticated_requests':0,'mcp_tools_call_requests':0,'last_mcp_request_at':0}
     def handle(self, method, path, headers, body):
         h = {k.lower(): v for k,v in headers.items()}
         if path == '/.well-known/oauth-protected-resource': return self.respond(404)
@@ -153,4 +165,17 @@ class TunnelHTTP(HTTPApplication):
             except Exception:pass
         # Reuse protocol validation, without accepting external bearer identity.
         h['authorization'] = h['x-feishu-local-auth']
-        return super().handle(method, path, h, body)
+        response=super().handle(method, path, h, body)
+        try:
+            request=json.loads(body)
+            if isinstance(request,dict) and request.get('method')=='events/subscribe':
+                result=json.loads(response[2]); error=result.get('error',{})
+                reason=error.get('data',{}).get('reason','none')
+                allowed={'none','local_approval_pending','destination_rejected','timeout','connection_failed','challenge_failed'}
+                code=error.get('code',0)
+                with self.telemetry_lock:
+                    self.telemetry.update(subscribe_requests=self.telemetry['subscribe_requests']+1,
+                        subscribe_last_http_status=response[0],subscribe_last_rpc_code=code if code in (0,-32600,-32601,-32602,-32700,-32015,-32020,-32022,-32603) else -1,
+                        subscribe_last_reason=reason if reason in allowed else 'other')
+        except Exception:pass
+        return response

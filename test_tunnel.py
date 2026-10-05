@@ -89,6 +89,9 @@ class TunnelTests(unittest.TestCase):
         status,_,body=self.request(app)
         self.assertEqual(status,400)
         self.assertEqual(json.loads(body)['error']['data']['reason'],'local_approval_pending')
+        self.assertEqual(app.telemetry['subscribe_last_rpc_code'],-32015)
+        self.assertEqual(app.telemetry['subscribe_last_reason'],'local_approval_pending')
+        self.assertEqual(adapter.callback.diagnostic_snapshot()['challenge_attempts'],0)
         self.assertFalse(adapter.subscriptions)
         self.assertEqual(next(iter(self.control.snapshot()['callback_pending'].values()))['url'],self.url)
         self.assertNotIn(self.secret,json.dumps(self.control.snapshot()))
@@ -99,6 +102,7 @@ class TunnelTests(unittest.TestCase):
         identifier=next(iter(self.control.snapshot()['callback_pending']))
         self.control.approve_callback(identifier)
         result=adapter.subscribe_authorized(OWNER,self.params,self.local)
+        self.assertEqual(adapter.callback.diagnostic_snapshot(),{'challenge_attempts':1,'challenge_last_http_status':200})
         self.assertNotIn('authorization',adapter.subscriptions[result['id']])
         altered={**self.params,'delivery':{**self.params['delivery'],'url':self.url+'?different=1'}}
         with self.assertRaises(CallbackVerificationError):adapter.subscribe_authorized(OWNER,altered)

@@ -136,6 +136,10 @@ class DurableAdapter(Adapter):
                         if delta:self.delivery_counts[reason]=self.delivery_counts.get(reason,0)+delta
                 self.mutate(commit)
             with self.lock:return {'pending':len(self.outbox),'outcomes':dict(self.delivery_counts)}
+    def list_received_messages(self,principal,args):
+        with self.lock:
+            if self.check_authorization and self.check_authorization('')!=principal:raise PermissionError('Authorization revoked')
+            return super().list_received_messages(principal,args)
     def send(self,*args):
         with self.network_lock:
             with self.lock:clone=self.isolated()

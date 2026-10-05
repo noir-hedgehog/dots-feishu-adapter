@@ -38,10 +38,12 @@ class Gateway:
                        **self.holder.get('control_status',{})}
             if adapter:
                 with adapter.lock:
+                    payload['retained_messages']=len(adapter.messages)
                     payload['callback_delivered']=adapter.delivery_counts.get('delivered',0)
                     payload['active_subscriptions']=sum(sub.get('expires',0)>time.time() for sub in adapter.subscriptions.values())
                 with self.holder['http'].telemetry_lock:
                     payload.update(self.holder['http'].telemetry)
+                payload.update(adapter.callback.diagnostic_snapshot())
             body = json.dumps(payload).encode()
             status = '200 OK' if environ['PATH_INFO'] == '/healthz' or ready else '503 Service Unavailable'
         elif self.holder.get('http'):
