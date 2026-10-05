@@ -13,6 +13,7 @@ from deploy.run import read_secret
 from deploy.store import Store
 from deploy.tunnel import Control
 from deploy.literal_env import read_literal_env
+from ops.tunnel_profile import render_profile
 
 
 def main():
@@ -66,6 +67,8 @@ def main():
         destination.mkdir(mode=0o755,exist_ok=True)
         path=destination/'personal.conf'
         path.write_bytes((root/'ops'/source).read_bytes());path.chmod(0o644)
+    profile=base/'tunnel/avalon-feishu.yaml'
+    profile.write_text(render_profile());profile.chmod(0o644)
     (base/'approved').touch(mode=0o600)
     subprocess.run(['systemctl','daemon-reload'],check=True)
     subprocess.run(['systemctl','enable','feishu-dot-adapter','feishu-dot-tunnel','feishu-dot-health.timer'],check=True)

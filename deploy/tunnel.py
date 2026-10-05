@@ -134,12 +134,23 @@ class TunnelAdapter(DurableAdapter):
         return super().subscribe_authorized(principal, params)
 
 class TunnelHTTP(HTTPApplication):
+    def __init__(self,*args,**kwargs):
+        super().__init__(*args,**kwargs)
+        self.telemetry_lock=threading.Lock()
+        self.telemetry={'mcp_authenticated_requests':0,'mcp_tools_call_requests':0,'last_mcp_request_at':0}
     def handle(self, method, path, headers, body):
         h = {k.lower(): v for k,v in headers.items()}
         if path == '/.well-known/oauth-protected-resource': return self.respond(404)
         if path != '/mcp': return self.respond(404)
         try: self.authenticate(h.get('x-feishu-local-auth', ''))
         except Exception: return self.respond(403)
+        with self.telemetry_lock:
+            self.telemetry['mcp_authenticated_requests']+=1
+            self.telemetry['last_mcp_request_at']=int(time.time())
+            try:
+                request=json.loads(body)
+                if isinstance(request,dict) and request.get('method')=='tools/call':self.telemetry['mcp_tools_call_requests']+=1
+            except Exception:pass
         # Reuse protocol validation, without accepting external bearer identity.
         h['authorization'] = h['x-feishu-local-auth']
         return super().handle(method, path, h, body)

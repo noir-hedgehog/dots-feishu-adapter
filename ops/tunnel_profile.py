@@ -1,0 +1,21 @@
+"""Nonsecret personal service profile; no env resolution before CLI overrides."""
+from deploy.literal_env import TUNNEL_ID
+
+def render_profile():
+    return f'''config_version: 1
+control_plane:
+  base_url: "https://api.openai.com"
+  tunnel_id: "{TUNNEL_ID}"
+  api_key: "file:/run/credentials/feishu-dot-tunnel.service/control_plane_api_key"
+health:
+  listen_addr: "127.0.0.1:8766"
+admin_ui:
+  open_browser: false
+log:
+  level: warn
+  format: json
+mcp:
+  server_urls:
+    - channel: main
+      url: "http://127.0.0.1:8765/mcp"
+'''

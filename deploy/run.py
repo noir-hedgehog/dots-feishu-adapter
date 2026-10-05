@@ -3,6 +3,7 @@ import argparse
 import getpass
 import importlib.util
 import json
+import os
 import stat
 import threading
 from pathlib import Path
@@ -14,11 +15,22 @@ from deploy.feishu import FeishuSDK, delivery_worker, start_ws
 from deploy.network import SafeHTTPS
 from deploy.store import Store, DurableAdapter
 from deploy.transport import HTTPApplication
+from deploy.diagnostics import phase,report
 
 class Server(ThreadingMixIn,WSGIServer):
     daemon_threads=True
 class SilentHandler(WSGIRequestHandler):
     def log_message(self,*args): pass
+
+def systemd_credential_directory(directory):
+    path=Path(directory)
+    supplied=os.environ.get('CREDENTIALS_DIRECTORY')
+    if not supplied or path!=Path(supplied):return False
+    if path.parent!=Path('/run/credentials') or path.name!='feishu-dot-adapter.service':return False
+    if path.is_symlink() or not path.is_dir():return False
+    info=path.stat()
+    # systemd credentials are a read-only, non-world-accessible runtime mount.
+    return info.st_uid in (0,os.geteuid()) and not (stat.S_IMODE(info.st_mode)&0o227)
 
 def read_secret(name, prompt, directory=None):
     if directory is None:
@@ -26,8 +38,11 @@ def read_secret(name, prompt, directory=None):
     path = Path(directory) / name
     if path.is_symlink() or not path.is_file():
         raise ValueError('Missing protected credential')
-    if stat.S_IMODE(path.stat().st_mode) & 0o077:
-        raise ValueError('Credential permissions must be private')
+    info=path.stat()
+    mode=stat.S_IMODE(info.st_mode)
+    if mode & 0o077:
+        if not (mode==0o440 and info.st_uid in (0,os.geteuid()) and systemd_credential_directory(directory)):
+            raise ValueError('Credential permissions must be private')
     value = path.read_text().strip()
     if not value:
         raise ValueError('Empty credential')
@@ -66,7 +81,8 @@ def main():
         print('Missing official dependencies: '+', '.join(missing)); return 2
     if not args.run:
         print('Dependencies present. Network and ports remain disabled without --run.'); return 0
-    config=json.loads(Path(args.config).read_text())
+    with phase('config_load'):
+        config=json.loads(Path(args.config).read_text())
     if args.auth_mode == 'tunnel-single-user':
         from deploy.tunnel_runtime import run
         run(config, args.credential_dir)
@@ -103,4 +119,6 @@ def main():
 
 if __name__=='__main__':
     try: raise SystemExit(main())
-    except Exception: raise SystemExit('Startup failed; verify approved configuration and dependencies. No diagnostic credentials are logged.')
+    except Exception as error:
+        report(error,'startup')
+        raise SystemExit('Startup failed. See allowlisted adapter_error stage/category; no exception text logged.')
