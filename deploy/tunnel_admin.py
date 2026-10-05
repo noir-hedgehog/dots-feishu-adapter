@@ -12,6 +12,21 @@ CONFIRM = 'PERSONAL TUNNEL ONLY'
 def confirmation(prompt,expected):
     return input(prompt).strip()==expected
 
+class LocalActionError(ValueError):
+    def __init__(self,code):
+        if code not in {'callback_expired','callback_missing','not_paired'}:code='callback_missing'
+        self.code=code
+        super().__init__(code)
+
+def valid_pending_callback(control,identifier):
+    state=control.snapshot()
+    if state.get('personal_audience_confirmed') is not True or not state.get('binding'):
+        raise LocalActionError('not_paired')
+    item=state.get('callback_pending',{}).get(identifier)
+    if item is None:raise LocalActionError('callback_missing')
+    if item['expires']<=control.clock():raise LocalActionError('callback_expired')
+    return item
+
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('action', choices=['confirm-audience', 'pair', 'callback', 'reset-pairing', 'revoke'])
@@ -35,12 +50,21 @@ def main():
             if input('Type ACCEPT PRIVATE CHAT to bind permanently: ') != 'ACCEPT PRIVATE CHAT': raise PermissionError('Not confirmed')
             control.accept_pair(identifier)
         elif args.action == 'callback':
-            for identifier,item in state.get('callback_pending',{}).items():
-                print(identifier, repr(item['url']))
+            pending=state.get('callback_pending',{})
+            fresh=False
+            for identifier,item in pending.items():
+                remaining=max(0,int(item['expires']-control.clock()))
+                if remaining:
+                    fresh=True
+                    print(identifier, 'seconds_remaining=',remaining,repr(item['url']))
+                else:print(identifier,'EXPIRED: retry authenticated subscription to obtain a fresh candidate')
+            if not pending:raise LocalActionError('callback_missing')
+            if not fresh:raise LocalActionError('callback_expired')
             identifier=input('Pending callback ID verified as the URL from your current authenticated ChatGPT subscription: ').strip()
-            item=state.get('callback_pending',{})[identifier]
+            item=valid_pending_callback(control,identifier)
             ApprovedCallback(control).transport(item['url']) # public HTTPS DNS validation again
             if input('Type ACCEPT CALLBACK to approve exactly this URL: ') != 'ACCEPT CALLBACK': raise PermissionError('Not confirmed')
+            valid_pending_callback(control,identifier)
             control.approve_callback(identifier)
             print('Retry events/subscribe from the same plugin; signed challenge is still required.')
         elif args.action == 'reset-pairing':
@@ -56,4 +80,9 @@ def main():
 
 if __name__=='__main__':
     try: main()
+    except LocalActionError as error:
+        advice={'callback_expired':'Candidate expired after 600 seconds. Retry the authenticated subscription, then approve the fresh candidate promptly.',
+                'callback_missing':'No matching pending candidate. Obtain a fresh authenticated subscription request.',
+                'not_paired':'Personal audience and pairing must be confirmed first.'}
+        raise SystemExit('Local action rejected: '+advice[error.code])
     except Exception: raise SystemExit('Local action rejected; check status, candidate and confirmation. No secrets logged.')
