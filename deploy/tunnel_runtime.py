@@ -52,6 +52,12 @@ class Gateway:
             if adapter:
                 with adapter.lock:
                     payload['retained_messages']=len(adapter.messages)
+                    payload['receipt_enabled']=bool(adapter.receipt_app_id)
+                    payload['receipt_pending']=sum(x['state']=='pending' for x in adapter.receipts.values())
+                    payload['receipt_confirmed']=adapter.receipt_counters.get('confirmed',0)
+                    payload['receipt_unknown']=sum(x['state']=='safe_unknown' for x in adapter.receipts.values())
+                    payload['receipt_permission_blocked']=bool(adapter.receipt_counters.get('permission_blocked'))
+                    payload['receipt_rejected']=adapter.receipt_counters.get('rejected',0)
                     payload['callback_delivered']=adapter.delivery_counts.get('delivered',0)
                     payload['active_subscriptions']=sum(sub.get('expires',0)>time.time() for sub in adapter.subscriptions.values())
                 with self.holder['http'].telemetry_lock:
@@ -117,6 +123,11 @@ def run(config, credential_dir):
                     from deploy.handoff import HandoffCallback
                     adapter.callback=HandoffCallback(control,lambda:check(''),lambda:holder['http'].disconnected())
                 holder['http'] = TunnelHTTP(adapter, authorization, 'http://127.0.0.1:8765/mcp', '', config.get('allowed_origins', ['https://chatgpt.com']))
+                if config.get('received_reaction_enabled') is True:
+                    from deploy.receipts import ReceiptWorker
+                    adapter.receipt_app_id=config['feishu_app_id']
+                    holder['receipts']=ReceiptWorker(adapter,config['feishu_app_id'],stop)
+                    holder['receipts'].thread.start()
                 holder['adapter'] = adapter
             if holder.get('adapter'): holder['adapter'].drain()
     def safe_monitor():
@@ -135,6 +146,7 @@ def run(config, credential_dir):
         stop.set()
         server.shutdown()
         holder['monitor'].join(timeout=25)
-        if not holder['monitor'].is_alive():
+        if holder.get('receipts'):holder['receipts'].thread.join(timeout=12)
+        if not holder['monitor'].is_alive() and (not holder.get('receipts') or not holder['receipts'].thread.is_alive()):
             if holder.get('adapter'): holder['adapter'].store.close()
             control_store.close()

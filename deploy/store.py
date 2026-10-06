@@ -39,22 +39,25 @@ class Store:
 
 class DurableAdapter(Adapter):
     def __init__(self,store,**kwargs):
-        super().__init__(**kwargs); self.store=store; self.lock=threading.RLock(); self.network_lock=threading.Lock(); self.check_authorization=None
+        super().__init__(**kwargs); self.store=store; self.lock=threading.RLock(); self.network_lock=threading.Lock(); self.check_authorization=None; self.receipts={}; self.receipt_counters={}; self.receipt_app_id=None
         state=store.load()
         if state:
             if state['binding']!=[self.owner,self.user,self.chat]: raise ValueError('State identity mismatch')
             self.subscriptions=state['subscriptions']; self.messages=state['messages']; self.sent=state['sent']
             self.outbox={tuple(k):v for k,v in state['outbox']}
             self.delivery_counts=state.get('delivery_counts',{})
+            self.receipts=state.get('receipts',{}); self.receipt_counters=state.get('receipt_counters',{})
+            for item in self.receipts.values():
+                if item['state']=='sending':item['state']='safe_unknown'
     def snapshot(self):
-        return {'binding':[self.owner,self.user,self.chat],'subscriptions':self.subscriptions,'messages':self.messages,'sent':self.sent,'outbox':[[list(k),v] for k,v in self.outbox.items()],'delivery_counts':self.delivery_counts}
+        return {'binding':[self.owner,self.user,self.chat],'subscriptions':self.subscriptions,'messages':self.messages,'sent':self.sent,'outbox':[[list(k),v] for k,v in self.outbox.items()],'delivery_counts':self.delivery_counts,'receipts':self.receipts,'receipt_counters':self.receipt_counters}
     def mutate(self,fn,*args):
         with self.lock:
             old=json.loads(json.dumps(self.snapshot()))
             try:
                 result=fn(*args); self.store.save(self.snapshot()); return result
             except Exception:
-                self.delivery_counts=old['delivery_counts']; self.subscriptions=old['subscriptions']; self.messages=old['messages']; self.sent=old['sent']; self.outbox={tuple(k):v for k,v in old['outbox']}
+                self.receipts=old['receipts'];self.receipt_counters=old['receipt_counters'];self.delivery_counts=old['delivery_counts']; self.subscriptions=old['subscriptions']; self.messages=old['messages']; self.sent=old['sent']; self.outbox={tuple(k):v for k,v in old['outbox']}
                 raise
     def subscribe(self,*args): return self.subscribe_authorized(*args)
     def subscribe_authorized(self,principal,params,token=None,authorization_expiry=None):
@@ -87,7 +90,13 @@ class DurableAdapter(Adapter):
         with self.lock:
             if len(self.messages)>=10000 and args[1].get('message_id') not in self.messages: raise ValueError('Message retention capacity reached')
             if len(self.outbox)>=10000: raise ValueError('Delivery queue capacity reached')
-            return self.mutate(super().inject,*args)
+            def admit():
+                result=super(DurableAdapter,self).inject(*args)
+                if not result['duplicate']:
+                    from deploy.receipts import queue_receipt
+                    queue_receipt(self,args[1]['message_id'])
+                return result
+            return self.mutate(admit)
     def isolated(self):
         # Snapshot under lock; network work operates on an independent adapter.
         clone=Adapter(owner=self.owner,user=self.user,chat=self.chat,callback=self.callback,feishu=self.feishu,clock=self.clock)

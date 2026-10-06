@@ -11,7 +11,7 @@ class FeishuSDK:
     def connect_client(cls,app_id,app_secret):
         import lark_oapi as lark
         from lark_oapi.api.im import v1
-        client=lark.Client.builder().app_id(app_id).app_secret(app_secret).log_level(lark.LogLevel.ERROR).build()
+        client=lark.Client.builder().app_id(app_id).app_secret(app_secret).log_level(lark.LogLevel.ERROR).timeout(10).build()
         return cls(client,v1)
     def send(self,chat_id,text,uuid,reply_to=None):
         m=self.models
@@ -39,6 +39,22 @@ class FeishuSDK:
             break
         if not response.success() or not response.data or not response.data.message_id: raise RuntimeError('Feishu send rejected')
         return {'message_id':response.data.message_id}
+
+    def receipt(self,message_id,emoji):
+        from deploy.receipts import ReactionOutcome
+        if emoji!='Get':raise ValueError('Receipt emoji restricted')
+        m=self.models
+        body=m.CreateMessageReactionRequestBody.builder().reaction_type(m.Emoji.builder().emoji_type(emoji).build()).build()
+        request=m.CreateMessageReactionRequest.builder().message_id(message_id).request_body(body).build()
+        try:response=self.client.im.v1.message_reaction.create(request)
+        except Exception:return ReactionOutcome('safe_unknown')
+        status=getattr(getattr(response,'raw',None),'status_code',200)
+        if status==403 or getattr(response,'code',None)==99991672:return ReactionOutcome('permission_denied')
+        if status>=500 or status==429:return ReactionOutcome('safe_unknown')
+        if not response.success():return ReactionOutcome('rejected')
+        reaction_id=getattr(getattr(response,'data',None),'reaction_id',None)
+        if not isinstance(reaction_id,str) or not reaction_id:return ReactionOutcome('safe_unknown')
+        return ReactionOutcome('confirmed',reaction_id)
 
 def normalized(event):
     message,sender=event.event.message,event.event.sender
