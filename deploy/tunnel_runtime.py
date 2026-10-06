@@ -2,11 +2,24 @@
 import json
 import threading
 import time
+import select
+import socket
 from deploy.feishu import FeishuSDK, start_ws
 from deploy.run import read_secret, make_server, Server, SilentHandler
 from deploy.store import Store
 from deploy.diagnostics import phase,report
 from deploy.tunnel import Control, OWNER, ApprovedCallback, LocalAuthorization, TunnelAdapter, TunnelHTTP
+
+class HandoffHandler(SilentHandler):
+    def get_environ(self):
+        environ=super().get_environ()
+        def disconnected():
+            try:
+                ready,_,_=select.select([self.connection],[],[],0)
+                return bool(ready and self.connection.recv(1,socket.MSG_PEEK|socket.MSG_DONTWAIT)==b'')
+            except (OSError,ValueError):return True
+        environ['feishu.disconnected']=disconnected
+        return environ
 
 class Bridge:
     owner = OWNER
@@ -80,7 +93,12 @@ def run(config, credential_dir):
             control.observe_ws(opened)
             state=control.snapshot()
             binding = state.get('binding')
-            holder['control_status']={'pairing_candidates':len(state.get('candidates',{})),
+            handoff=state.get('handoff',{})
+            holder['control_status']={'handoff_waiting':handoff.get('status')=='waiting' and handoff.get('expires',0)>time.time(),
+                                      'handoff_seconds_remaining':max(0,int(handoff.get('expires',0)-time.time())),
+                                      'approved_callback_count':len(state.get('callback_approved',[])),
+                                      'pending_callback_count':sum(item.get('expires',0)>time.time() for item in state.get('callback_pending',{}).values()),
+                                      'pairing_candidates':len(state.get('candidates',{})),
                                       'pairing_seconds_remaining':max(0,int(state.get('pairing_deadline',0)-time.time())),
                                       'binding_confirmed':bool(binding),
                                       'audience_confirmed':state.get('personal_audience_confirmed') is True,
@@ -95,6 +113,9 @@ def run(config, credential_dir):
                         raise PermissionError('Personal transport authorization revoked')
                     return OWNER
                 adapter.check_authorization = check
+                if config.get('callback_handoff_experiment') is True:
+                    from deploy.handoff import HandoffCallback
+                    adapter.callback=HandoffCallback(control,lambda:check(''),lambda:holder['http'].disconnected())
                 holder['http'] = TunnelHTTP(adapter, authorization, 'http://127.0.0.1:8765/mcp', '', config.get('allowed_origins', ['https://chatgpt.com']))
                 holder['adapter'] = adapter
             if holder.get('adapter'): holder['adapter'].drain()
@@ -105,7 +126,7 @@ def run(config, credential_dir):
     holder['monitor'] = threading.Thread(target=safe_monitor, daemon=True)
     holder['monitor'].start()
     with phase('http_bind'):
-        server = make_server('127.0.0.1', config.get('local_port',8765), Gateway(holder), server_class=Server, handler_class=SilentHandler)
+        server = make_server('127.0.0.1', config.get('local_port',8765), Gateway(holder), server_class=Server, handler_class=HandoffHandler if config.get('callback_handoff_experiment') is True else SilentHandler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
         with phase('feishu_ws_connect'):

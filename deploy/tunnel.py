@@ -143,13 +143,30 @@ class LocalAuthorization:
 class TunnelAdapter(DurableAdapter):
     def subscribe_authorized(self, principal, params, token=None, authorization_expiry=None):
         # The fixed personal transport credential is not an OAuth token; never store it in subscription state.
-        return super().subscribe_authorized(principal, params)
+        if not hasattr(self.callback,'begin'):return super().subscribe_authorized(principal,params)
+        self.callback.begin()
+        try:
+            result=super().subscribe_authorized(principal,params)
+            self.callback.check()
+            return result
+        except Exception:
+            # If cancellation becomes visible immediately after commit, remove this experiment's subscription.
+            if 'result' in locals():
+                self.mutate(lambda:self.subscriptions.pop(result['id'],None))
+            raise
+        finally:self.callback.finish()
 
 class TunnelHTTP(HTTPApplication):
     def __init__(self,*args,**kwargs):
         super().__init__(*args,**kwargs)
+        self.request_local=threading.local()
         self.telemetry_lock=threading.Lock()
         self.telemetry={'subscribe_requests':0,'subscribe_last_http_status':0,'subscribe_last_rpc_code':0,'subscribe_last_reason':'none','mcp_authenticated_requests':0,'mcp_tools_call_requests':0,'last_mcp_request_at':0}
+    def __call__(self,environ,start_response):
+        self.request_local.disconnected=environ.get('feishu.disconnected',lambda:False)
+        try:return super().__call__(environ,start_response)
+        finally:self.request_local.disconnected=lambda:False
+    def disconnected(self):return getattr(self.request_local,'disconnected',lambda:False)()
     def handle(self, method, path, headers, body):
         h = {k.lower(): v for k,v in headers.items()}
         if path == '/.well-known/oauth-protected-resource': return self.respond(404)
@@ -171,7 +188,7 @@ class TunnelHTTP(HTTPApplication):
             if isinstance(request,dict) and request.get('method')=='events/subscribe':
                 result=json.loads(response[2]); error=result.get('error',{})
                 reason=error.get('data',{}).get('reason','none')
-                allowed={'none','local_approval_pending','destination_rejected','timeout','connection_failed','challenge_failed'}
+                allowed={'none','local_approval_pending','destination_rejected','timeout','connection_failed','challenge_failed','handoff_busy','handoff_timeout','handoff_abandoned'}
                 code=error.get('code',0)
                 with self.telemetry_lock:
                     self.telemetry.update(subscribe_requests=self.telemetry['subscribe_requests']+1,

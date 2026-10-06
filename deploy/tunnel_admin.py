@@ -2,6 +2,7 @@
 import argparse
 import json
 import os
+import time
 from pathlib import Path
 from deploy.run import read_secret
 from deploy.store import Store
@@ -29,7 +30,7 @@ def valid_pending_callback(control,identifier):
 
 def main():
     parser=argparse.ArgumentParser()
-    parser.add_argument('action', choices=['confirm-audience', 'pair', 'callback', 'reset-pairing', 'revoke'])
+    parser.add_argument('action', choices=['confirm-audience', 'pair', 'callback', 'reset-pairing', 'revoke', 'watch-callback'])
     args=parser.parse_args()
     if not os.isatty(0): raise ValueError('Interactive terminal required')
     config=json.loads(Path('/etc/feishu-dot/config.json').read_text())
@@ -49,6 +50,24 @@ def main():
             identifier=input('Candidate ID you independently recognize as your own private chat: ').strip()
             if input('Type ACCEPT PRIVATE CHAT to bind permanently: ') != 'ACCEPT PRIVATE CHAT': raise PermissionError('Not confirmed')
             control.accept_pair(identifier)
+        elif args.action == 'watch-callback':
+            if config.get('callback_handoff_experiment') is not True:raise ValueError('Experiment not enabled')
+            from deploy.handoff import approve_live
+            print('READY: now ask ChatGPT to issue ONE CREATE. Waiting up to 300 seconds for a fresh in-flight request. No approval is automatic.')
+            deadline=time.monotonic()+300
+            while time.monotonic()<deadline:
+                current=control.snapshot();handoff=current.get('handoff',{})
+                if handoff.get('status')=='waiting' and handoff.get('expires',0)>time.time():break
+                time.sleep(.2)
+            else:raise ValueError('No live request arrived')
+            identifier=handoff['digest'];nonce=handoff['nonce']
+            item=valid_pending_callback(control,identifier)
+            print('Exact live callback:',identifier,repr(item['url']))
+            print('Seconds remaining:',max(0,int(handoff['expires']-time.time())))
+            if input('Verify this is your current authenticated ChatGPT request; type ACCEPT CALLBACK: ').strip()!='ACCEPT CALLBACK':raise PermissionError('Not confirmed')
+            # Transaction rechecks the nonce and live expiry after human input; stale candidates cannot pass.
+            approve_live(control,identifier,nonce)
+            print('Exact callback approved for the original request. Do NOT issue a second CREATE. Signed verification is still required.')
         elif args.action == 'callback':
             pending=state.get('callback_pending',{})
             fresh=False

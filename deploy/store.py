@@ -78,7 +78,9 @@ class DurableAdapter(Adapter):
                 subscription['expires']=min(subscription['expires'],authorization_expiry-30)
                 if subscription['expires']-self.clock()<10:raise ValueError('Authorization expired during verification; obtain a fresh token')
                 result['refreshBefore']=datetime.fromtimestamp(subscription['expires'],timezone.utc).isoformat()
-            def commit():self.subscriptions[result['id']]=clone.subscriptions[result['id']]
+            def commit():
+                if hasattr(self.callback,'check'):self.callback.check()
+                self.subscriptions[result['id']]=clone.subscriptions[result['id']]
             self.mutate(commit);return result
     def unsubscribe(self,*args): return self.mutate(super().unsubscribe,*args)
     def inject(self,*args):
