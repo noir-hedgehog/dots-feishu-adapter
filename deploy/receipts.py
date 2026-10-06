@@ -5,7 +5,10 @@ from adapter import encoded
 
 EMOJI='Get'
 class ReactionOutcome:
-    def __init__(self,state,reaction_id=None):self.state,self.reaction_id=state,reaction_id
+    def __init__(self,state,reaction_id=None,http_status=0,provider_code=None):
+        self.state,self.reaction_id=state,reaction_id
+        self.http_status=http_status if type(http_status) is int and 0<=http_status<=599 else 0
+        self.provider_code=provider_code if type(provider_code) is int and 0<=provider_code<=1000000000 else None
 
 class ReceiptWorker:
     def __init__(self,adapter,app_id,stop):
@@ -30,7 +33,7 @@ class ReceiptWorker:
         except Exception:outcome=ReactionOutcome('safe_unknown')
         if outcome.state not in {'confirmed','permission_denied','rejected','safe_unknown'}:outcome=ReactionOutcome('safe_unknown')
         def commit():
-            item.update(state=outcome.state)
+            item.update(state=outcome.state,last_http_status=outcome.http_status,provider_code=outcome.provider_code)
             if outcome.state=='confirmed' and outcome.reaction_id:item['reaction_id']=outcome.reaction_id
             a.receipt_counters[outcome.state]=a.receipt_counters.get(outcome.state,0)+1
             if outcome.state=='permission_denied':
@@ -38,10 +41,14 @@ class ReceiptWorker:
                 for other in a.receipts.values():
                     if other['state']=='pending':other['state']='permission_blocked'
         with a.lock:a.mutate(commit)
+        from deploy.observability import emit
+        emit('receipt',outcome.state)
     def run(self):
         while not self.stop.wait(.1):
             try:self.step()
             except Exception:
+                from deploy.observability import emit
+                emit('worker','unknown')
                 # Storage failure: no text/exception output, don't flood persistence.
                 if self.stop.wait(30):return
 

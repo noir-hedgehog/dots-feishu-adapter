@@ -46,18 +46,19 @@ class DurableAdapter(Adapter):
             self.subscriptions=state['subscriptions']; self.messages=state['messages']; self.sent=state['sent']
             self.outbox={tuple(k):v for k,v in state['outbox']}
             self.delivery_counts=state.get('delivery_counts',{})
+            self.message_status=state.get('message_status',{})
             self.receipts=state.get('receipts',{}); self.receipt_counters=state.get('receipt_counters',{})
             for item in self.receipts.values():
                 if item['state']=='sending':item['state']='safe_unknown'
     def snapshot(self):
-        return {'binding':[self.owner,self.user,self.chat],'subscriptions':self.subscriptions,'messages':self.messages,'sent':self.sent,'outbox':[[list(k),v] for k,v in self.outbox.items()],'delivery_counts':self.delivery_counts,'receipts':self.receipts,'receipt_counters':self.receipt_counters}
+        return {'binding':[self.owner,self.user,self.chat],'subscriptions':self.subscriptions,'messages':self.messages,'sent':self.sent,'outbox':[[list(k),v] for k,v in self.outbox.items()],'delivery_counts':self.delivery_counts,'message_status':self.message_status,'receipts':self.receipts,'receipt_counters':self.receipt_counters}
     def mutate(self,fn,*args):
         with self.lock:
             old=json.loads(json.dumps(self.snapshot()))
             try:
                 result=fn(*args); self.store.save(self.snapshot()); return result
             except Exception:
-                self.receipts=old['receipts'];self.receipt_counters=old['receipt_counters'];self.delivery_counts=old['delivery_counts']; self.subscriptions=old['subscriptions']; self.messages=old['messages']; self.sent=old['sent']; self.outbox={tuple(k):v for k,v in old['outbox']}
+                self.message_status=old['message_status'];self.receipts=old['receipts'];self.receipt_counters=old['receipt_counters'];self.delivery_counts=old['delivery_counts']; self.subscriptions=old['subscriptions']; self.messages=old['messages']; self.sent=old['sent']; self.outbox={tuple(k):v for k,v in old['outbox']}
                 raise
     def subscribe(self,*args): return self.subscribe_authorized(*args)
     def subscribe_authorized(self,principal,params,token=None,authorization_expiry=None):
@@ -96,11 +97,15 @@ class DurableAdapter(Adapter):
                     from deploy.receipts import queue_receipt
                     queue_receipt(self,args[1]['message_id'])
                 return result
-            return self.mutate(admit)
+            result=self.mutate(admit)
+            if not result['duplicate']:
+                from deploy.observability import emit
+                emit('message_admitted','accepted',pending=len(self.outbox))
+            return result
     def isolated(self):
         # Snapshot under lock; network work operates on an independent adapter.
         clone=Adapter(owner=self.owner,user=self.user,chat=self.chat,callback=self.callback,feishu=self.feishu,clock=self.clock)
-        for name in ('subscriptions','messages','outbox','sent','delivery_counts'):
+        for name in ('subscriptions','messages','outbox','sent','delivery_counts','message_status'):
             setattr(clone,name,copy.deepcopy(getattr(self,name)))
         return clone
     def revoke(self,principal):
@@ -142,19 +147,49 @@ class DurableAdapter(Adapter):
                     if key in clone.outbox:self.outbox[key]=clone.outbox[key]
                     else:self.outbox.pop(key,None)
                     if key[0] not in clone.subscriptions:self.subscriptions.pop(key[0],None)
+                    mid=original['event']['data']['message_id']
+                    if mid in clone.message_status:self.message_status.setdefault(mid,{})['delivery']=copy.deepcopy(clone.message_status[mid].get('delivery',{}))
                     for reason,count in clone.delivery_counts.items():
                         delta=count-clone_base_counts.get(reason,0)
                         if delta:self.delivery_counts[reason]=self.delivery_counts.get(reason,0)+delta
                 self.mutate(commit)
+                from deploy.observability import emit
+                emit('event_delivery','delivered' if clone.delivery_counts.get('delivered',0)>clone_base_counts.get('delivered',0) else 'pending' if key in clone.outbox else 'rejected',pending=len(self.outbox))
             with self.lock:return {'pending':len(self.outbox),'outcomes':dict(self.delivery_counts)}
     def list_received_messages(self,principal,args):
         with self.lock:
             if self.check_authorization and self.check_authorization('')!=principal:raise PermissionError('Authorization revoked')
             return super().list_received_messages(principal,args)
+    def get_message_status(self,principal,args):
+        with self.lock:
+            if self.check_authorization and self.check_authorization('')!=principal:raise PermissionError('Authorization revoked')
+            return super().get_message_status(principal,args)
     def send(self,*args):
         with self.network_lock:
             with self.lock:clone=self.isolated()
-            result=clone.send(*args)  # provider IO outside storage lock
-            def commit(): self.sent.update(clone.sent)
+            principal,arguments=args[:2];self.authorize(principal)
+            reply=len(args)>2 and args[2] is True
+            mid=arguments.get('message_id') if isinstance(arguments,dict) and reply else None
+            cached=isinstance(arguments,dict) and arguments.get('idempotency_key') in clone.sent
+            try:result=clone.send(*args) # provider IO outside storage lock
+            except Exception as error:
+                rejected=isinstance(error,(ValueError,PermissionError))
+                if mid in self.messages:
+                    def uncertain():
+                        state=self.message_status.setdefault(mid,{}).setdefault('reply',{})
+                        field='rejected_count' if rejected else 'unknown_count'
+                        state[field]=state.get(field,0)+1
+                        state.update(last_state='rejected' if rejected else 'safe_unknown',last_attempt_at=self.clock())
+                    self.mutate(uncertain)
+                from deploy.observability import emit
+                emit('reply','rejected' if rejected else 'safe_unknown');raise
+            def commit():
+                self.sent.update(clone.sent)
+                if mid in self.messages and not cached:
+                    state=self.message_status.setdefault(mid,{}).setdefault('reply',{})
+                    state['confirmed_count']=state.get('confirmed_count',0)+1
+                    state.update(last_state='confirmed',last_attempt_at=self.clock())
             self.mutate(commit)
+            from deploy.observability import emit
+            emit('reply','confirmed')
             return result

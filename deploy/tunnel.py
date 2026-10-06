@@ -190,6 +190,8 @@ class TunnelHTTP(HTTPApplication):
                 reason=error.get('data',{}).get('reason','none')
                 allowed={'none','local_approval_pending','destination_rejected','timeout','connection_failed','challenge_failed','handoff_busy','handoff_timeout','handoff_abandoned'}
                 code=error.get('code',0)
+                from deploy.observability import emit
+                emit('subscription',reason if error else 'confirmed',http_status=response[0],rpc_code=code)
                 with self.telemetry_lock:
                     self.telemetry.update(subscribe_requests=self.telemetry['subscribe_requests']+1,
                         subscribe_last_http_status=response[0],subscribe_last_rpc_code=code if code in (0,-32600,-32601,-32602,-32700,-32015,-32020,-32022,-32603) else -1,

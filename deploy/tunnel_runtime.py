@@ -45,7 +45,8 @@ class Gateway:
             counters = {'subscriptions': 0, 'queued': 0}
             if adapter:
                 with adapter.lock: counters.update(subscriptions=len(adapter.subscriptions), queued=len(adapter.outbox))
-            payload = {'process': True, 'ws_open': opened, 'paired': adapter is not None, **counters,
+            payload = {'process': True,'state_worker_alive':self.holder['monitor'].is_alive(),
+                       'receipt_worker_alive':bool(self.holder.get('receipts') and self.holder['receipts'].thread.is_alive()), 'ws_open': opened, 'paired': adapter is not None, **counters,
                        'sdk_received_events': self.holder.get('sdk_received_events',0),
                        'last_sdk_event_at': self.holder.get('last_sdk_event_at',0),
                        **self.holder.get('control_status',{})}
@@ -63,6 +64,8 @@ class Gateway:
                 with self.holder['http'].telemetry_lock:
                     payload.update(self.holder['http'].telemetry)
                 payload.update(adapter.callback.diagnostic_snapshot())
+                from deploy.observability import health_metrics
+                payload.update(health_metrics(adapter,time.time()))
             body = json.dumps(payload).encode()
             status = '200 OK' if environ['PATH_INFO'] == '/healthz' or ready else '503 Service Unavailable'
         elif self.holder.get('http'):

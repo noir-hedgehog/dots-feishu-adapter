@@ -49,12 +49,13 @@ class FeishuSDK:
         try:response=self.client.im.v1.message_reaction.create(request)
         except Exception:return ReactionOutcome('safe_unknown')
         status=getattr(getattr(response,'raw',None),'status_code',200)
-        if status==403 or getattr(response,'code',None)==99991672:return ReactionOutcome('permission_denied')
-        if status>=500 or status==429:return ReactionOutcome('safe_unknown')
-        if not response.success():return ReactionOutcome('rejected')
+        code=getattr(response,'code',None)
+        if status==403 or code==99991672:return ReactionOutcome('permission_denied',http_status=status,provider_code=code)
+        if status>=500 or status==429:return ReactionOutcome('safe_unknown',http_status=status,provider_code=code)
+        if not response.success():return ReactionOutcome('rejected',http_status=status,provider_code=code)
         reaction_id=getattr(getattr(response,'data',None),'reaction_id',None)
-        if not isinstance(reaction_id,str) or not reaction_id:return ReactionOutcome('safe_unknown')
-        return ReactionOutcome('confirmed',reaction_id)
+        if not isinstance(reaction_id,str) or not reaction_id:return ReactionOutcome('safe_unknown',http_status=status,provider_code=code)
+        return ReactionOutcome('confirmed',reaction_id,http_status=status,provider_code=code)
 
 def normalized(event):
     message,sender=event.event.message,event.event.sender
