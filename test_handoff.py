@@ -44,6 +44,17 @@ class Tests(unittest.TestCase):
         self.assertEqual(len(self.a.subscriptions),1);self.assertEqual(self.callback.diagnostics['challenge_attempts'],1)
         self.assertEqual(self.control.snapshot()['handoff']['status'],'ended')
         self.assertNotIn(self.params['delivery']['secret'],json.dumps(self.control.snapshot()))
+    def test_same_callback_renewal_without_new_confirmation(self):
+        thread,results,h=self.run_request()
+        approve_live(self.control,h['digest'],h['nonce']);thread.join(2)
+        first=results[0]
+        self.params['delivery']['secret']='whsec_'+base64.b64encode(b'y'*32).decode()
+        renewed=self.a.subscribe_authorized(OWNER,self.params)
+        self.assertEqual(first['id'],renewed['id'])
+        self.assertEqual(len(self.a.subscriptions),1)
+        self.assertEqual(self.callback.diagnostics['challenge_attempts'],2)
+        self.assertEqual(self.control.snapshot()['handoff']['status'],'ended')
+        self.assertEqual(len(self.control.snapshot()['callback_approved']),1)
     def test_revocation_or_disconnect_cancels_without_challenge(self):
         thread,results,h=self.run_request();self.closed=True;thread.join(2)
         self.assertIsInstance(results[0],CallbackVerificationError);self.assertFalse(self.a.subscriptions)
