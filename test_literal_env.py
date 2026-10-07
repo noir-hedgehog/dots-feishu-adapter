@@ -1,7 +1,10 @@
 import tempfile
 import unittest
 from pathlib import Path
-from deploy.literal_env import APP_ID,TUNNEL_ID,parse_literal_env,read_literal_env
+from deploy.literal_env import parse_literal_env,read_literal_env
+
+APP_ID='cli_testapp'
+TUNNEL_ID='tunnel_testtarget'
 
 class LiteralEnvTests(unittest.TestCase):
     def raw(self,secret='dummy-feishu',key='dummy-control'):

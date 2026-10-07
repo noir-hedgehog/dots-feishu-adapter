@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""User-run only, after approval to persist these secrets on Avalon."""
+"""User-run only, after approval to persist these secrets on the deployment host."""
 import getpass
 import os
 from pathlib import Path
 from cryptography.fernet import Fernet
 
 if os.geteuid() != 0:
-    raise SystemExit('Run through sudo on Avalon in your own interactive terminal.')
+    raise SystemExit('Run through sudo on the deployment host in your own interactive terminal.')
 if not os.isatty(0):
     raise SystemExit('Interactive terminal required; do not pipe secrets.')
 os.umask(0o077)

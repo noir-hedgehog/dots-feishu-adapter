@@ -10,7 +10,7 @@ Persistent deduplication key includes(appid,messageid,Get); backlog<=100,total r
 
 Needed existing Feishu app permission: im:message.reactions:write_only. User must check/add/publish this permission in Feishu console if missing; the agent does not expand it. Optional im:message.reactions:read is not needed and not used by this version. A permission block requires explicit recovery after console permissions are corrected; restarting alone does not clear it.
 
-Human enable on Avalon (do not continue if installer fails):
+Human enable on the deployment host (do not continue if installer fails):
 
 ```sh
 sudo systemctl stop feishu-dot-health.timer feishu-dot-adapter
@@ -25,5 +25,3 @@ Feishu capability plan (no generic shell/CLI tool):
 - Next optional message tools: list_message_reactions and add_message_reaction scoped to retained incoming message IDs, fixed chat and explicit emoji enum. Read requires im:message.reactions:read; writes require im:message.reactions:write_only. Manual writes must be explicitly requested.
 - Documents,calendar,tasks,drive/search: separate typed tools with object allowlists and independently verified tenant/user permission requirements before enabling. Existing bot tenant credentials must not silently stand in for user OAuth or grant access to all files/people.
 - Official Lark skills/CLI are useful references for API semantics; do not expose arbitrary subprocess commands, paths, access tokens or shell execution through MCP. Inventory and review a concrete requested capability before install/auth/scope changes.
-
-Deployment verification,2026-10-06 05:23 UTC: user explicitly authorized direct Avalon operation from the verified paired private chat. Activation approved and completed with nonsecret source/config rollback protection; Adapter restarted once, Tunnel/nginx unchanged. readyz200,WS open,paired,one active persistent subscription,callback_delivered4,receipt_enabled=true,pending/unknown/rejected/confirmed0. This is activation verification, not proof of reaction permission or visible Get: a NEW owner/private message is still required. Before the manual restart, automatic platform renewal was observed: subscribe_requests2,challenge_attempts2,latest HTTP200,one active subscription. Existing encrypted subscriptions/approvals survived activation. No credentials/scope/remote-control/GitHub publication changes.

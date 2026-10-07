@@ -25,7 +25,7 @@ python3 -m venv .venv
 .venv/bin/python -m deploy.run
 ```
 
-`verify.py` fails if any test is skipped. Tests need no live credentials or sockets. On the authoring Mac: all 43 tests passed with zero skips, including real official SDK builders, authenticated encryption and RS256 verification. Compilation and mock lifecycle passed. Official dependencies were installed into the project virtual environment through the formal approval mechanism with the existing proxy configuration preserved. No Feishu/ChatGPT end-to-end session or live OAuth integration was performed.
+`verify.py` fails if any test is skipped. Tests need no live credentials or sockets and cover official SDK builders, authenticated encryption and RS256 verification. Use `requirements.lock.txt` for the tested dependency versions. Offline success does not establish a live Feishu/ChatGPT session or validate an OAuth provider integration.
 
 ## Deployment prerequisites (not performed)
 
@@ -58,10 +58,12 @@ Delivery is bounded at-least-once with retry exhaustion: failures can terminate 
 
 Subscription refreshBefore is capped at the earlier verified token/introspection expiry minus 30 seconds. Tokens with less than 40 seconds remaining are rejected; a challenge that consumes the remaining window also causes rejection. Renewal stores the newly verified token and its expiry. No extra expiresAt field is invented; clients use the documented refreshBefore field.
 
-## Avalon service preparation (2026-10-05)
+## Service deployment and personal Tunnel mode
 
-[Deployment handoff](ops/AVALON.md) records the verified target, official client version, installed service paths, user-controlled credential entry and remaining connection gates. The service launcher now supports a protected systemd credential directory. Health endpoints expose transport status and aggregate counts only; SDK error logging is suppressed because it can include signed connection URLs. Service and logrotate templates are in `ops/`. This preparation does not establish a live Feishu/dot session. Run `verify.py` for all 46 offline tests.
+[Service deployment](ops/AVALON.md) describes the protected systemd credential setup and prerequisites. Templates in `ops/` use generic paths and identifier placeholders; configure your own deployment before running them. Health endpoints report transport state and aggregate counts, not end-to-end success.
 
-## Opt-in personal Tunnel mode
+[Personal Tunnel setup](ops/PERSONAL-TUNNEL.md) is opt-in and requires the Tunnel's entire effective audience to be only the owner. It has no multi-user identity isolation. Default OAuth remains available. Personal mode adds local MCP authentication, a bounded manual pairing window, exact callback approvals, signed challenges and encrypted restart state. No live service is enabled by checking out this repository.
 
-[Personal Tunnel handoff](ops/PERSONAL-TUNNEL.md) provides a single user-run enable command with explicit audience, credential persistence and startup confirmation. This mode requires the whole Tunnel's effective audience to be only the owner; it has no multi-user identity isolation. Default OAuth remains available. It adds local random-secret MCP authentication, WS-gated 600-second manual pairing, exact callback approvals from authenticated subscriptions, signed challenges and encrypted restart state. No additional OAuth service is required. All 60 offline tests pass; the agent has not activated live services or credentials.
+The retained inbox (`list_received_messages`) and message diagnostics (`get_message_status`) authenticate every HTTP request. OAuth reads use the request's verified principal; queued webhook deliveries separately recheck their saved token. Personal Tunnel reads additionally recheck the local audience and pairing. Deployments must refresh their tool catalog after an upgrade.
+
+Run `verify.py` with the locked dependencies for the complete offline suite, including real JWT signatures and encryption with mock network endpoints. These checks do not validate a real OAuth provider, tenant permissions, live Feishu delivery, or a specific client's Tunnel behavior.

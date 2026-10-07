@@ -1,10 +1,14 @@
 """Four-key literal env parser. No shell evaluation, expansion or interpolation."""
 import os
+import re
 import stat
 
-APP_ID='cli_a92f3828bc5c1cd1'
-TUNNEL_ID='tunnel_6ac07851f3bc8191b7bef273a6c4b777'
 KEYS={'FEISHU_APP_ID','FEISHU_APP_SECRET','TUNNEL_ID','CONTROL_PLANE_API_KEY'}
+
+def validate_identifier(value,prefix):
+    if not isinstance(value,str) or not re.fullmatch(re.escape(prefix)+r'[A-Za-z0-9]{1,128}',value):
+        raise ValueError('Replace identifier placeholders with your own application and Tunnel IDs')
+    return value
 
 def parse_literal_env(raw, require_secrets=True):
     if isinstance(raw,bytes):raw=raw.decode('utf-8')
@@ -19,7 +23,8 @@ def parse_literal_env(raw, require_secrets=True):
         if value.startswith(('"',"'")) or any(ord(c)<32 for c in value):raise ValueError('Use unquoted single-line literal values')
         values[key]=value
     if set(values)!=KEYS:raise ValueError('Missing required env keys')
-    if values['FEISHU_APP_ID']!=APP_ID or values['TUNNEL_ID']!=TUNNEL_ID:raise ValueError('Target identifier mismatch')
+    validate_identifier(values['FEISHU_APP_ID'],'cli_')
+    validate_identifier(values['TUNNEL_ID'],'tunnel_')
     if require_secrets and any(not values[key] for key in ('FEISHU_APP_SECRET','CONTROL_PLANE_API_KEY')):raise ValueError('Fill both credentials locally')
     return values
 

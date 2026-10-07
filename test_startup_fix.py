@@ -10,7 +10,7 @@ from ops import apply_startup_fix
 
 class StartupFixTests(unittest.TestCase):
     def test_profile_uses_runtime_file_without_environment_dependency(self):
-        profile=render_profile()
+        profile=render_profile('tunnel_testtarget')
         self.assertIn('api_key: "file:/run/credentials/feishu-dot-tunnel.service/control_plane_api_key"',profile)
         self.assertNotIn('env:',profile)
         self.assertIn('127.0.0.1:8765/mcp',profile)

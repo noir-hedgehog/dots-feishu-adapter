@@ -156,13 +156,18 @@ class DurableAdapter(Adapter):
                 from deploy.observability import emit
                 emit('event_delivery','delivered' if clone.delivery_counts.get('delivered',0)>clone_base_counts.get('delivered',0) else 'pending' if key in clone.outbox else 'rejected',pending=len(self.outbox))
             with self.lock:return {'pending':len(self.outbox),'outcomes':dict(self.delivery_counts)}
+    def authorize_read(self,principal):
+        # HTTPApplication authenticates each OAuth request before dispatch. The
+        # delivery verifier requires its queued Bearer token, not an empty token.
+        # Direct in-process callers are trusted to supply an authenticated principal.
+        self.authorize(principal)
     def list_received_messages(self,principal,args):
         with self.lock:
-            if self.check_authorization and self.check_authorization('')!=principal:raise PermissionError('Authorization revoked')
+            self.authorize_read(principal)
             return super().list_received_messages(principal,args)
     def get_message_status(self,principal,args):
         with self.lock:
-            if self.check_authorization and self.check_authorization('')!=principal:raise PermissionError('Authorization revoked')
+            self.authorize_read(principal)
             return super().get_message_status(principal,args)
     def send(self,*args):
         with self.network_lock:

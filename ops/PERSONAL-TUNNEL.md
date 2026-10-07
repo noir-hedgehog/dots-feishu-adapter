@@ -8,26 +8,24 @@ Sources: https://raw.githubusercontent.com/openai/tunnel-client/v0.0.15/docs/con
 
 ## Confirmation for user
 
-请确认 tunnel_6ac07851f3bc8191b7bef273a6c4b777 的全部有效授权受众只有你本人，包括 Platform 组织角色/主体、关联 ChatGPT 工作区、API key 与其他连接客户端。个人模式无法区分不同使用者。你是否批准将飞书 Secret、Tunnel runtime key、随机本地 MCP 密钥及状态加密密钥保存在 Avalon 的 root-only 文件中，用于持续访问、开机自启动，并由你在自己的终端执行最终启用？配对和实际回调地址仍需你分别本地明确确认。
+Confirm the entire effective audience of your selected Tunnel is only you. The setup command asks for explicit approval before persisting credentials and starting services. Pairing and exact callback approval remain separate local confirmations.
 
-Agent has not submitted/generated/copied credentials or executed the enable script. The previously rejected service start has not been retried. User executes the following only after approval.
-
-## Single setup command, in user's Mac terminal
+## Setup on your deployment host
 
 ```sh
-ssh -t avalon 'cd /opt/apps/feishu-dot-adapter && sudo .venv/bin/python -m ops.enable_personal'
+cd /opt/apps/feishu-dot-adapter && sudo .venv/bin/python -m ops.enable_personal
 ```
 
-Read the combined audience/storage/startup explanation and type ENABLE PERSONAL TUNNEL only if approved and true. Default input is the root-only /etc/feishu-dot/.env. Edit it on Avalon with sudo nano; fill FEISHU_APP_SECRET and CONTROL_PLANE_API_KEY without quotes. The nonsecret FEISHU_APP_ID and TUNNEL_ID are prefilled. Parsing is literal, never source/eval; --prompt selects hidden input instead. Generated local MCP secret and Fernet key persist in root-owned 0600 files under /etc/feishu-dot/credentials (0700); systemd LoadCredential supplies only the credentials required by each ubuntu service. This is protected filesystem storage, not a secret vault with encryption at rest. Preserve state key for database recovery.
+Read the combined audience/storage/startup explanation and type ENABLE PERSONAL TUNNEL only if approved and true. Default input is the root-only /etc/feishu-dot/.env. Fill all four fields locally: FEISHU_APP_ID, TUNNEL_ID, FEISHU_APP_SECRET and CONTROL_PLANE_API_KEY, without quotes. The example contains identifier placeholders, not a usable deployment. The command validates identifier syntax and asks you to type CONFIRM followed by the exact App ID and Tunnel ID before writing. It rejects a different target when existing configuration/profile files are present; migrating an existing binding requires separate planning. Parsing is literal, never source/eval; --prompt selects hidden input instead. Generated local MCP secret and Fernet key persist in root-owned 0600 files under /etc/feishu-dot/credentials (0700); systemd LoadCredential supplies only the credentials required by each ubuntu service. This is protected filesystem storage, not a secret vault with encryption at rest. Preserve state key for database recovery.
 
 The script preserves generated keys, refuses reprovisioning while services are active, backs up prior OAuth config, installs explicit personal-mode drop-ins and starts the services after the user's typed confirmation. No credential is printed. Pairing begins only after SDK state OPEN, lasts 600 seconds once and survives reconnect/restart without extension.
 
 ## Manual pairing
 
-Configure Feishu bot visibility, long-connection im.message.receive_v1 and message permissions for cli_a92f3828bc5c1cd1. After loopback /readyz reports ws_open:true, send a private text. The pairing text is discarded; only opaque user/chat candidate IDs are retained. Within 600 seconds run:
+Configure Feishu bot visibility, long-connection im.message.receive_v1 and message permissions for your own application. After loopback /readyz reports ws_open:true, send a private text. The pairing text is discarded; only opaque user/chat candidate IDs are retained. Within 600 seconds run:
 
 ```sh
-ssh -t avalon 'cd /opt/apps/feishu-dot-adapter && sudo .venv/bin/python -m deploy.tunnel_admin pair'
+cd /opt/apps/feishu-dot-adapter && sudo .venv/bin/python -m deploy.tunnel_admin pair
 ```
 
 Inspect open_id/chat_id, independently recognize your private chat, choose candidate ID and type ACCEPT PRIVATE CHAT. No first-message trust. Groups/bots rejected; at most ten candidates. Closed/stale WS or expiry rejects acceptance. Pairing fixes owner/user/chat and cannot silently change. Interactive reset-pairing permits a new window only after an unpaired window expired.
@@ -39,7 +37,7 @@ Connect developer-mode plugin through the existing Tunnel after pairing, with th
 Approve the actual URL locally without guessing domains or copying it into chat:
 
 ```sh
-ssh -t avalon 'cd /opt/apps/feishu-dot-adapter && sudo .venv/bin/python -m deploy.tunnel_admin callback'
+cd /opt/apps/feishu-dot-adapter && sudo .venv/bin/python -m deploy.tunnel_admin callback
 ```
 
 Inspect escaped pending URL from the real request, verify it is your current product callback, choose pending ID and type ACCEPT CALLBACK. Pending approvals expire after 600 seconds and are encrypted at rest without signing keys. Exact approved URL persists, not wildcard domains. HTTPS/443, public-only DNS, pinned connection IP, normal TLS and no redirects are checked before pending storage, approval, signed challenge and delivery.
@@ -51,7 +49,9 @@ Retry events/subscribe from the same plugin. Signed verification challenge still
 Send a fresh private text AFTER subscription; verify the matching event reaches the intended dot, invoke reply_to_message via Tunnel and have the user verify the Feishu reply. Then verify restart/renewal and unsubscribe. Readiness and counter values alone are not completion.
 
 ```sh
-ssh -t avalon 'cd /opt/apps/feishu-dot-adapter && sudo .venv/bin/python -m deploy.tunnel_admin revoke'
+cd /opt/apps/feishu-dot-adapter && sudo .venv/bin/python -m deploy.tunnel_admin revoke
 ```
 
 Typed REVOKE disables new MCP calls and new message admission; delivery rechecks audience before each send. In-flight calls cannot be recalled. Revoke before widening Tunnel audience and switch to proper OAuth for shared access. Separately authorized rollback removes personal drop-ins and restores config.oauth.backup.json; preserve encrypted data/keys.
+
+The `avalon-personal` owner label and legacy `avalon-feishu` profile filename are retained for compatibility with existing encrypted state and service units; they are not a deployment host or a hardcoded target ID. The startup patch renders the profile using its existing Tunnel ID and rejects missing/placeholder IDs instead of installing the repository example.

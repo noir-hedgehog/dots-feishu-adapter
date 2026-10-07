@@ -141,6 +141,12 @@ class LocalAuthorization:
         return OWNER
 
 class TunnelAdapter(DurableAdapter):
+    def authorize_read(self,principal):
+        super().authorize_read(principal)
+        # Personal mode's callback checks local audience/binding, not OAuth.
+        # Recheck it at read time even if the HTTP secret gate already passed.
+        if self.check_authorization and self.check_authorization('')!=principal:
+            raise PermissionError('Personal transport authorization revoked')
     def subscribe_authorized(self, principal, params, token=None, authorization_expiry=None):
         # The fixed personal transport credential is not an OAuth token; never store it in subscription state.
         if not hasattr(self.callback,'begin'):return super().subscribe_authorized(principal,params)

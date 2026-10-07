@@ -4,6 +4,7 @@ from pathlib import Path
 from cryptography.fernet import Fernet
 from adapter import Adapter
 from deploy.store import Store,DurableAdapter
+from deploy.tunnel import TunnelAdapter
 
 class InboxTests(unittest.TestCase):
     def message(self,mid='m1'):
@@ -26,7 +27,7 @@ class InboxTests(unittest.TestCase):
             key=Fernet.generate_key();store=Store.encrypted(Path(d)/'s.db',key)
             a=DurableAdapter(store);a.inject(a.owner,self.message())
             a.mutate(lambda:a.messages['m1'].pop('timestamp'));store.close()
-            store=Store.encrypted(Path(d)/'s.db',key);a=DurableAdapter(store)
+            store=Store.encrypted(Path(d)/'s.db',key);a=TunnelAdapter(store)
             self.assertIsNone(a.list_received_messages(a.owner,{'chat_id':a.chat})['messages'][0]['timestamp'])
             self.assertEqual(a.list_received_messages(a.owner,{'chat_id':a.chat,'since':'2000-01-01T00:00:00Z'})['messages'],[])
             a.check_authorization=lambda _: 'revoked'
