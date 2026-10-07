@@ -1,0 +1,8 @@
+{
+  "auth_mode": "tunnel-single-user",
+  "feishu_app_id": "REPLACE_WITH_FEISHU_APP_ID",
+  "control_path": "/var/lib/feishu-dot/control.sqlite3",
+  "state_path": "/var/lib/feishu-dot/adapter.sqlite3",
+  "local_port": 8765,
+  "allowed_origins": ["https://chatgpt.com"]
+}

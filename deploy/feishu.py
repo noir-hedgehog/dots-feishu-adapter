@@ -11,7 +11,7 @@ class FeishuSDK:
     def connect_client(cls,app_id,app_secret):
         import lark_oapi as lark
         from lark_oapi.api.im import v1
-        client=lark.Client.builder().app_id(app_id).app_secret(app_secret).log_level(lark.LogLevel.ERROR).build()
+        client=lark.Client.builder().app_id(app_id).app_secret(app_secret).log_level(lark.LogLevel.ERROR).timeout(10).build()
         return cls(client,v1)
     def send(self,chat_id,text,uuid,reply_to=None):
         m=self.models
@@ -40,6 +40,23 @@ class FeishuSDK:
         if not response.success() or not response.data or not response.data.message_id: raise RuntimeError('Feishu send rejected')
         return {'message_id':response.data.message_id}
 
+    def receipt(self,message_id,emoji):
+        from deploy.receipts import ReactionOutcome
+        if emoji!='Get':raise ValueError('Receipt emoji restricted')
+        m=self.models
+        body=m.CreateMessageReactionRequestBody.builder().reaction_type(m.Emoji.builder().emoji_type(emoji).build()).build()
+        request=m.CreateMessageReactionRequest.builder().message_id(message_id).request_body(body).build()
+        try:response=self.client.im.v1.message_reaction.create(request)
+        except Exception:return ReactionOutcome('safe_unknown')
+        status=getattr(getattr(response,'raw',None),'status_code',200)
+        code=getattr(response,'code',None)
+        if status==403 or code==99991672:return ReactionOutcome('permission_denied',http_status=status,provider_code=code)
+        if status>=500 or status==429:return ReactionOutcome('safe_unknown',http_status=status,provider_code=code)
+        if not response.success():return ReactionOutcome('rejected',http_status=status,provider_code=code)
+        reaction_id=getattr(getattr(response,'data',None),'reaction_id',None)
+        if not isinstance(reaction_id,str) or not reaction_id:return ReactionOutcome('safe_unknown',http_status=status,provider_code=code)
+        return ReactionOutcome('confirmed',reaction_id,http_status=status,provider_code=code)
+
 def normalized(event):
     message,sender=event.event.message,event.event.sender
     return {'chat_type':message.chat_type,'sender_type':sender.sender_type,
@@ -47,7 +64,7 @@ def normalized(event):
             'message_type':message.message_type,'message_id':message.message_id,
             'text':json.loads(message.content).get('text','') if message.message_type=='text' else ''}
 
-def start_ws(app_id,app_secret,adapter):
+def start_ws(app_id,app_secret,adapter,on_client=None):
     import lark_oapi as lark
     def on_message(event):
         # Callback promptly persists admission; delivery is a separate worker.
@@ -56,6 +73,9 @@ def start_ws(app_id,app_secret,adapter):
         # Persistence/parse errors propagate so SDK delivery can be retried.
     dispatcher=lark.EventDispatcherHandler.builder('','').register_p2_im_message_receive_v1(on_message).build()
     client=lark.ws.Client(app_id,app_secret,event_handler=dispatcher,log_level=lark.LogLevel.ERROR)
+    # SDK errors may include signed WS URLs; never send them to service logs.
+    logging.getLogger("Lark").disabled=True
+    if on_client: on_client(client)
     client.start()
 
 def delivery_worker(adapter,stop):

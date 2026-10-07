@@ -26,7 +26,7 @@ class Tests(unittest.TestCase):
     def test_discovery(self):
         self.assertEqual(self.a.rpc('mock-owner','server/discover',{})['supportedVersions'],['2026-07-28'])
         self.assertEqual(self.a.event_list()['events'][0]['name'],EVENT)
-        self.assertEqual(len(self.a.tools()['tools']),2)
+        self.assertEqual(len(self.a.tools()['tools']),4)
     def test_subscription_idempotency_refresh_and_no_secret_leak(self):
         first=self.subscribe(); self.now+=1; second=self.subscribe()
         self.assertEqual(first['id'],second['id']); self.assertEqual(len(self.a.subscriptions),1)

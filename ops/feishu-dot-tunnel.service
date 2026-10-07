@@ -1,0 +1,23 @@
+[Unit]
+Description=Official OpenAI Tunnel for private Feishu MCP
+After=network-online.target feishu-dot-adapter.service
+Wants=network-online.target feishu-dot-adapter.service
+ConditionPathExists=/etc/feishu-dot/approved
+StartLimitIntervalSec=0
+[Service]
+User=ubuntu
+Group=ubuntu
+LoadCredential=control_plane_api_key:/etc/feishu-dot/credentials/control_plane_api_key
+ExecStart=/opt/apps/feishu-dot-adapter/bin/tunnel-client run --profile avalon-feishu --profile-dir /etc/feishu-dot/tunnel --control-plane.api-key file:%d/control_plane_api_key --log.level warn
+Restart=always
+RestartSec=10
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/log/feishu-dot
+StandardOutput=append:/var/log/feishu-dot/tunnel.log
+StandardError=append:/var/log/feishu-dot/tunnel.log
+[Install]
+WantedBy=multi-user.target

@@ -25,7 +25,7 @@ python3 -m venv .venv
 .venv/bin/python -m deploy.run
 ```
 
-`verify.py` fails if any test is skipped. Tests need no live credentials or sockets. On the authoring Mac: all 43 tests passed with zero skips, including real official SDK builders, authenticated encryption and RS256 verification. Compilation and mock lifecycle passed. Official dependencies were installed into the project virtual environment through the formal approval mechanism with the existing proxy configuration preserved. No Feishu/ChatGPT end-to-end session or live OAuth integration was performed.
+`verify.py` fails if any test is skipped. Tests need no live credentials or sockets and cover official SDK builders, authenticated encryption and RS256 verification. Use `requirements.lock.txt` for the tested dependency versions. Offline success does not establish a live Feishu/ChatGPT session or validate an OAuth provider integration.
 
 ## Deployment prerequisites (not performed)
 
@@ -57,3 +57,13 @@ Deployment now requires an approved RFC 7662 token introspection endpoint and a 
 Delivery is bounded at-least-once with retry exhaustion: failures can terminate undelivered events. A crash or storage failure after a remote endpoint accepts an event but before the local commit can cause repetition; receivers must deduplicate stable eventId. Provider send ambiguity relies on Feishu's limited UUID deduplication window. Revocation/unsubscribe cannot recall an HTTP request already in flight. No exactly-once guarantee is made.
 
 Subscription refreshBefore is capped at the earlier verified token/introspection expiry minus 30 seconds. Tokens with less than 40 seconds remaining are rejected; a challenge that consumes the remaining window also causes rejection. Renewal stores the newly verified token and its expiry. No extra expiresAt field is invented; clients use the documented refreshBefore field.
+
+## Service deployment and personal Tunnel mode
+
+[Service deployment](ops/AVALON.md) describes the protected systemd credential setup and prerequisites. Templates in `ops/` use generic paths and identifier placeholders; configure your own deployment before running them. Health endpoints report transport state and aggregate counts, not end-to-end success.
+
+[Personal Tunnel setup](ops/PERSONAL-TUNNEL.md) is opt-in and requires the Tunnel's entire effective audience to be only the owner. It has no multi-user identity isolation. Default OAuth remains available. Personal mode adds local MCP authentication, a bounded manual pairing window, exact callback approvals, signed challenges and encrypted restart state. No live service is enabled by checking out this repository.
+
+The retained inbox (`list_received_messages`) and message diagnostics (`get_message_status`) authenticate every HTTP request. OAuth reads use the request's verified principal; queued webhook deliveries separately recheck their saved token. Personal Tunnel reads additionally recheck the local audience and pairing. Deployments must refresh their tool catalog after an upgrade.
+
+Run `verify.py` with the locked dependencies for the complete offline suite, including real JWT signatures and encryption with mock network endpoints. These checks do not validate a real OAuth provider, tenant permissions, live Feishu delivery, or a specific client's Tunnel behavior.

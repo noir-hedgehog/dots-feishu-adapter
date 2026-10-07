@@ -1,0 +1,5 @@
+[Unit]
+Description=Feishu adapter and tunnel transport watchdog
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/apps/feishu-dot-adapter/ops/healthcheck.py

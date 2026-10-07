@@ -83,6 +83,7 @@ class Adapter:
         # Ephemeral only. Restart invalidates subscriptions, dedup and associations.
         self.subscriptions, self.messages, self.outbox, self.sent = {}, {}, {}, {}
         self.delivery_counts = {}
+        self.message_status = {}
     def authorize(self, principal):
         if principal != self.owner: raise PermissionError('Unauthorized principal')
     def filters(self, params):
@@ -99,9 +100,10 @@ class Adapter:
         url, secret = delivery.get('url', ''), delivery.get('secret', '')
         parsed = urlsplit(url)
         if delivery.get('mode') != 'webhook': raise ValueError('Webhook delivery required')
-        try:self.callback.validate_url(url)
-        except (ValueError,TypeError):raise CallbackVerificationError('destination_rejected') from None
         key_bytes(secret)
+        try:self.callback.validate_url(url)
+        except CallbackVerificationError:raise
+        except (ValueError,TypeError):raise CallbackVerificationError('destination_rejected') from None
         ttl = params.get('ttlMs', 3600000)
         if ttl is None: ttl = 3600000  # never grant indefinite access
         if isinstance(ttl, bool) or not isinstance(ttl, int) or ttl <= 0: raise ValueError('Invalid TTL')
@@ -141,12 +143,17 @@ class Adapter:
         event = {'eventId':'evt_'+hashlib.sha256(mid.encode()).hexdigest(), 'name':EVENT,
           'timestamp':datetime.fromtimestamp(self.clock(),timezone.utc).isoformat(),
           'data':{'chat_id':self.chat,'message_id':mid,'text':text},'cursor':None}
-        self.messages[mid] = event['data']
+        self.messages[mid] = {**event['data'], 'timestamp': event['timestamp']}
+        self.message_status[mid]={'delivery':{}}
         for sid,sub in self.subscriptions.items():
             if sub['expires']>self.clock(): self.outbox[(sid,event['eventId'])]={'event':event,'attempts':0,'due':self.clock()}
         return {'duplicate':False,'queued':len(self.outbox)}
     def terminal(self, key, reason):
-        self.outbox.pop(key,None)
+        item=self.outbox.pop(key,None)
+        if item:
+            mid=item['event']['data']['message_id']
+            counts=self.message_status.setdefault(mid,{}).setdefault('delivery',{})
+            counts[reason]=counts.get(reason,0)+1
         self.delivery_counts[reason]=self.delivery_counts.get(reason,0)+1
     def drain_one(self,key):
         item=self.outbox.get(key)
@@ -204,6 +211,45 @@ class Adapter:
         result=self.feishu.send(self.chat,text,uuid,mid)
         self.sent[key]=(fingerprint,result)
         return result
+    def list_received_messages(self, principal, args):
+        self.authorize(principal)
+        if not isinstance(args,dict) or set(args)-{'chat_id','limit','cursor','since'} or args.get('chat_id')!=self.chat:
+            raise ValueError('Invalid inbox scope')
+        limit=args.get('limit',20)
+        if isinstance(limit,bool) or not isinstance(limit,int) or not 1<=limit<=50:raise ValueError('Invalid limit')
+        cursor=args.get('cursor'); since=args.get('since')
+        if cursor is not None and (not isinstance(cursor,str) or cursor not in self.messages):raise ValueError('Unknown cursor')
+        if since is not None:
+            if not isinstance(since,str):raise ValueError('Invalid since')
+            parsed=datetime.fromisoformat(since.replace('Z','+00:00'))
+            if parsed.tzinfo is None:raise ValueError('Timezone required')
+            since=parsed.timestamp()
+        rows=[]; after=cursor is None
+        for mid,item in self.messages.items():
+            if not after:
+                if mid==cursor:after=True
+                continue
+            if item.get('chat_id')!=self.chat:continue
+            stamp=item.get('timestamp')
+            if since is not None and (stamp is None or datetime.fromisoformat(stamp).timestamp()<since):continue
+            rows.append({'message_id':mid,'text':item['text'],'timestamp':stamp})
+        page=rows[:limit]
+        return {'messages':page,'next_cursor':page[-1]['message_id'] if len(rows)>limit else None,
+                'timestamp_basis':'adapter_received_at; legacy records have null timestamp'}
+    def get_message_status(self,principal,args):
+        self.authorize(principal)
+        if not isinstance(args,dict) or set(args)!={'chat_id','message_id'} or args.get('chat_id')!=self.chat:raise ValueError('Invalid diagnostic scope')
+        mid=args.get('message_id')
+        if not isinstance(mid,str) or mid not in self.messages:raise ValueError('Unknown retained message')
+        item=self.messages[mid];status=self.message_status.get(mid,{})
+        receipts=[x for x in getattr(self,'receipts',{}).values() if x['message_id']==mid]
+        receipt=receipts[-1] if receipts else None
+        return {'message_id':mid,'received_at':item.get('timestamp'),'durably_received':True,
+            'webhook_pending':sum(x['event']['data']['message_id']==mid for x in self.outbox.values()),
+            'webhook_outcomes':dict(status.get('delivery',{})),
+            'reply':dict(status.get('reply',{})),
+            'get_receipt':{'state':receipt['state'] if receipt else 'not_recorded','provider_confirmed':bool(receipt and receipt['state']=='confirmed'),'http_status':receipt.get('last_http_status',0) if receipt else 0,'provider_code':receipt.get('provider_code') if receipt else None},
+            'historical_status_available':mid in self.message_status}
     def tools(self):
         common={'chat_id':{'type':'string','enum':[self.chat]},'text':{'type':'string','minLength':1,'maxLength':8000},'idempotency_key':{'type':'string','minLength':1,'maxLength':128}}
         result=[]
@@ -213,6 +259,12 @@ class Adapter:
             result.append({'name':name,'description':'Send text only to the authorized Feishu private chat.' if name=='send_message' else 'Reply to a known inbound message in the authorized Feishu private chat.',
               'inputSchema':{'type':'object','properties':props,'required':list(props),'additionalProperties':False},
               'annotations':{'readOnlyHint':False,'destructiveHint':False,'idempotentHint':True,'openWorldHint':True}})
+        result.append({'name':'list_received_messages','description':'Read retained incoming text from the paired private chat, oldest first. No provider history fetch. Timestamp is adapter receipt time; older records may have null timestamp.',
+          'inputSchema':{'type':'object','properties':{'chat_id':{'type':'string','enum':[self.chat]},'limit':{'type':'integer','minimum':1,'maximum':50,'default':20},'cursor':{'type':'string'},'since':{'type':'string','format':'date-time'}},'required':['chat_id'],'additionalProperties':False},
+          'annotations':{'readOnlyHint':True,'destructiveHint':False,'idempotentHint':True,'openWorldHint':False}})
+        result.append({'name':'get_message_status','description':'Read status only for a retained paired-chat message: durable receipt, webhook outcomes, reply confirmation and Get receipt. No message body or secrets.',
+          'inputSchema':{'type':'object','properties':{'chat_id':{'type':'string','enum':[self.chat]},'message_id':{'type':'string'}},'required':['chat_id','message_id'],'additionalProperties':False},
+          'annotations':{'readOnlyHint':True,'destructiveHint':False,'idempotentHint':True,'openWorldHint':False}})
         return {'tools':result}
     def rpc(self, principal, method, params):
         self.authorize(principal)
@@ -224,8 +276,8 @@ class Adapter:
         if method=='tools/list': return self.tools()
         if method=='tools/call':
             name=params.get('name')
-            if name not in ('send_message','reply_to_message'): raise ValueError('Unknown tool')
-            result=self.send(principal,params.get('arguments',{}),name=='reply_to_message')
+            if name not in ('send_message','reply_to_message','list_received_messages','get_message_status'): raise ValueError('Unknown tool')
+            result=self.get_message_status(principal,params.get('arguments',{})) if name=='get_message_status' else self.list_received_messages(principal,params.get('arguments',{})) if name=='list_received_messages' else self.send(principal,params.get('arguments',{}),name=='reply_to_message')
             return {'content':[{'type':'text','text':json.dumps(result)}],'structuredContent':result,'isError':False}
         raise ValueError('Unsupported method')
 
